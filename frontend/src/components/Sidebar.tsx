@@ -1,6 +1,7 @@
 import React from 'react';
-import { HardDrive, Moon, Sun, Home, X } from 'lucide-react';
+import { HardDrive, Moon, Sun, Home, X, LogOut } from 'lucide-react';
 import { useStore } from '../store';
+import { useAuthStore } from '../authStore';
 import { cn } from '../lib/utils';
 import { FileIcon } from './FileIcon';
 
@@ -14,6 +15,7 @@ const formatCapacity = (bytes: number) => {
 
 export function Sidebar() {
   const { files, favorites, currentFolderId, setCurrentFolder, theme, toggleTheme, openPreview, removeRecentAccess } = useStore();
+  const { user, logout } = useAuthStore();
 
   const favoriteFolders = favorites.map(id => files.find(f => f.id === id)).filter(Boolean) as any[];
   const recentFiles = files
@@ -130,6 +132,24 @@ export function Sidebar() {
       </div>
 
       <div className="px-4 py-3 border-t border-slate-200 dark:border-slate-800 flex flex-col space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center min-w-0 gap-2">
+            <div className="w-6 h-6 rounded-full bg-blue-100 dark:bg-blue-900/40 flex items-center justify-center text-[11px] font-semibold text-blue-700 dark:text-blue-300 shrink-0">
+              {(user?.username ?? '?').slice(0, 1).toUpperCase()}
+            </div>
+            <span className="text-xs text-slate-600 dark:text-slate-300 truncate" title={user?.username}>
+              {user?.username ?? '未登录'}
+            </span>
+          </div>
+          <button
+            onClick={() => logout()}
+            className="p-1.5 text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded-lg transition-colors shrink-0"
+            title="登出"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
+        </div>
+
         <div className="flex flex-col space-y-1.5">
           <div className="flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400">
             <span>已用 {formatCapacity(usedStorage)}</span>

@@ -1,0 +1,14 @@
+# 构建产物
+/flist
+/dist/
+/data/
+/testroot/
+/testdata/
+
+# 前端 npm 构建输出（web/dist 为最终嵌入产物，需纳入版本管理）
+/frontend/node_modules/
+/frontend/dist/
+
+# 系统文件
+.DS_Store
+*.log
