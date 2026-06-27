@@ -13,7 +13,7 @@ import (
 func TestMkdir(t *testing.T) {
 	svc, root := setupTestRoot(t)
 
-	p, err := svc.Mkdir("/newdir")
+	p, err := svc.Mkdir(context.Background(), "/newdir")
 	if err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
@@ -25,19 +25,19 @@ func TestMkdir(t *testing.T) {
 	}
 
 	// 已存在 → 冲突。
-	if _, err := svc.Mkdir("/newdir"); err != ErrExists {
+	if _, err := svc.Mkdir(context.Background(), "/newdir"); err != ErrExists {
 		t.Errorf("expected ErrExists, got %v", err)
 	}
 
 	// 父目录不存在（仅建单层）→ NotFound。
-	if _, err := svc.Mkdir("/ghost/child"); err != ErrNotFound {
+	if _, err := svc.Mkdir(context.Background(), "/ghost/child"); err != ErrNotFound {
 		t.Errorf("expected ErrNotFound for missing parent, got %v", err)
 	}
 }
 
 func TestMkdir_InvalidName(t *testing.T) {
 	svc, _ := setupTestRoot(t)
-	if _, err := svc.Mkdir("/.."); err == nil {
+	if _, err := svc.Mkdir(context.Background(), "/.."); err == nil {
 		t.Error("expected error for invalid name")
 	}
 }
@@ -45,7 +45,7 @@ func TestMkdir_InvalidName(t *testing.T) {
 func TestTouch(t *testing.T) {
 	svc, root := setupTestRoot(t)
 
-	p, err := svc.Touch("/empty.txt")
+	p, err := svc.Touch(context.Background(), "/empty.txt")
 	if err != nil {
 		t.Fatalf("Touch: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestTouch(t *testing.T) {
 
 	// 已存在 → 冲突，且不 truncate。
 	writeFile(t, root, "data.txt", "keep me")
-	if _, err := svc.Touch("/data.txt"); err != ErrExists {
+	if _, err := svc.Touch(context.Background(), "/data.txt"); err != ErrExists {
 		t.Errorf("expected ErrExists, got %v", err)
 	}
 	if b, _ := os.ReadFile(filepath.Join(root, "data.txt")); string(b) != "keep me" {
@@ -71,7 +71,7 @@ func TestMove_Rename(t *testing.T) {
 	svc, root := setupTestRoot(t)
 	writeFile(t, root, "old.txt", "content")
 
-	results := svc.Move([]string{"/old.txt"}, "/new.txt")
+	results := svc.Move(context.Background(), []string{"/old.txt"}, "/new.txt")
 	if len(results) != 1 || !results[0].OK {
 		t.Fatalf("rename failed: %+v", results)
 	}
@@ -89,7 +89,7 @@ func TestMove_IntoDir(t *testing.T) {
 	writeFile(t, root, "b.txt", "b")
 	os.MkdirAll(filepath.Join(root, "dest"), 0o755)
 
-	results := svc.Move([]string{"/a.txt", "/b.txt"}, "/dest")
+	results := svc.Move(context.Background(), []string{"/a.txt", "/b.txt"}, "/dest")
 	if len(results) != 2 || !results[0].OK || !results[1].OK {
 		t.Fatalf("move into dir failed: %+v", results)
 	}
@@ -106,7 +106,7 @@ func TestMove_Conflict(t *testing.T) {
 	writeFile(t, root, "src.txt", "s")
 	writeFile(t, root, "exists.txt", "e")
 
-	results := svc.Move([]string{"/src.txt"}, "/exists.txt")
+	results := svc.Move(context.Background(), []string{"/src.txt"}, "/exists.txt")
 	if results[0].OK || results[0].Error != "file_exists" {
 		t.Errorf("expected file_exists conflict, got %+v", results[0])
 	}
@@ -114,7 +114,7 @@ func TestMove_Conflict(t *testing.T) {
 
 func TestMove_SrcNotFound(t *testing.T) {
 	svc, _ := setupTestRoot(t)
-	results := svc.Move([]string{"/ghost.txt"}, "/new.txt")
+	results := svc.Move(context.Background(), []string{"/ghost.txt"}, "/new.txt")
 	if results[0].OK || results[0].Error != "path_not_found" {
 		t.Errorf("expected path_not_found, got %+v", results[0])
 	}
@@ -125,7 +125,7 @@ func TestMove_DirIntoOwnSubtree(t *testing.T) {
 	os.MkdirAll(filepath.Join(root, "parent", "child"), 0o755)
 
 	// 把 /parent 移动进 /parent/child → 自包含，应被拒。
-	results := svc.Move([]string{"/parent"}, "/parent/child")
+	results := svc.Move(context.Background(), []string{"/parent"}, "/parent/child")
 	if results[0].OK || results[0].Error != "bad_request" {
 		t.Errorf("expected bad_request for self-subtree move, got %+v", results[0])
 	}
@@ -137,7 +137,7 @@ func TestMove_MultiToNonexistent(t *testing.T) {
 	writeFile(t, root, "b.txt", "b")
 
 	// dst 不存在且多个 src → 每项 not_a_dir。
-	results := svc.Move([]string{"/a.txt", "/b.txt"}, "/nowhere")
+	results := svc.Move(context.Background(), []string{"/a.txt", "/b.txt"}, "/nowhere")
 	for _, res := range results {
 		if res.OK || res.Error != "not_a_dir" {
 			t.Errorf("expected not_a_dir, got %+v", res)
@@ -150,7 +150,7 @@ func TestDelete(t *testing.T) {
 	writeFile(t, root, "x.txt", "x")
 	writeFile(t, root, "tree/sub/y.txt", "y")
 
-	results := svc.Delete([]string{"/x.txt", "/tree"})
+	results := svc.Delete(context.Background(), []string{"/x.txt", "/tree"})
 	if len(results) != 2 || !results[0].OK || !results[1].OK {
 		t.Fatalf("delete failed: %+v", results)
 	}
@@ -164,7 +164,7 @@ func TestDelete(t *testing.T) {
 
 func TestDelete_RootRejected(t *testing.T) {
 	svc, _ := setupTestRoot(t)
-	results := svc.Delete([]string{"/"})
+	results := svc.Delete(context.Background(), []string{"/"})
 	if results[0].OK || results[0].Error != "bad_request" {
 		t.Errorf("deleting root should be rejected, got %+v", results[0])
 	}
@@ -172,7 +172,7 @@ func TestDelete_RootRejected(t *testing.T) {
 
 func TestDelete_NotFound(t *testing.T) {
 	svc, _ := setupTestRoot(t)
-	results := svc.Delete([]string{"/ghost"})
+	results := svc.Delete(context.Background(), []string{"/ghost"})
 	if results[0].OK || results[0].Error != "path_not_found" {
 		t.Errorf("expected path_not_found, got %+v", results[0])
 	}

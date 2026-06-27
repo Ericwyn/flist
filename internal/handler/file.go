@@ -14,7 +14,7 @@ import (
 	"flist/internal/middleware"
 	"flist/internal/model"
 	"flist/internal/service"
-	"flist/internal/util"
+	"flist/internal/storage"
 )
 
 // searchTimeout 限制单次搜索遍历的最长耗时。
@@ -34,23 +34,27 @@ func NewFileHandler(files *service.FileService, logger *slog.Logger) *FileHandle
 	return &FileHandler{files: files, logger: logger}
 }
 
-// failFileErr 将服务层错误映射为统一错误响应。
+// failFileErr 将驱动 / 服务层错误映射为统一错误响应（错误词表统一在 storage 包）。
 func failFileErr(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, util.ErrPathTraversal):
+	case errors.Is(err, storage.ErrTraversal):
 		Fail(w, http.StatusBadRequest, CodePathTraversal, "path_traversal")
-	case errors.Is(err, util.ErrNameInvalid):
+	case errors.Is(err, storage.ErrInvalidName):
 		Fail(w, http.StatusBadRequest, CodeNameInvalid, "name_invalid")
-	case errors.Is(err, service.ErrNotFound):
+	case errors.Is(err, storage.ErrNotFound):
 		Fail(w, http.StatusNotFound, CodePathNotFound, "path_not_found")
-	case errors.Is(err, service.ErrForbidden):
+	case errors.Is(err, storage.ErrForbidden):
 		Fail(w, http.StatusForbidden, CodePermissionDenied, "permission_denied")
-	case errors.Is(err, service.ErrExists):
+	case errors.Is(err, storage.ErrExists):
 		Fail(w, http.StatusConflict, CodeFileExists, "file_exists")
-	case errors.Is(err, service.ErrNotFile):
+	case errors.Is(err, storage.ErrNotFile):
 		Fail(w, http.StatusBadRequest, CodeNotAFile, "not_a_file")
-	case errors.Is(err, service.ErrNotDir):
+	case errors.Is(err, storage.ErrNotDir):
 		Fail(w, http.StatusBadRequest, CodeNotADir, "not_a_dir")
+	case errors.Is(err, storage.ErrNotSupported):
+		Fail(w, http.StatusBadRequest, CodeBadRequest, "not_supported")
+	case errors.Is(err, storage.ErrBadOp):
+		Fail(w, http.StatusBadRequest, CodeBadRequest, "bad_request")
 	default:
 		failInternal(w)
 	}
@@ -95,7 +99,7 @@ func (h *FileHandler) List(w http.ResponseWriter, r *http.Request) {
 		PageSize:   atoiDefault(q.Get("page_size"), 0),
 	}
 
-	res, err := h.files.List(apiPath, opts)
+	res, err := h.files.List(r.Context(), apiPath, opts)
 	if err != nil {
 		failFileErr(w, err)
 		return
@@ -110,7 +114,7 @@ func (h *FileHandler) Stat(w http.ResponseWriter, r *http.Request) {
 		failBadRequest(w, "path required")
 		return
 	}
-	info, err := h.files.Stat(apiPath)
+	info, err := h.files.Stat(r.Context(), apiPath)
 	if err != nil {
 		failFileErr(w, err)
 		return
@@ -125,7 +129,7 @@ func (h *FileHandler) Preview(w http.ResponseWriter, r *http.Request) {
 		failBadRequest(w, "path required")
 		return
 	}
-	res, err := h.files.PreviewText(apiPath)
+	res, err := h.files.PreviewText(r.Context(), apiPath)
 	if err != nil {
 		failFileErr(w, err)
 		return
@@ -134,6 +138,9 @@ func (h *FileHandler) Preview(w http.ResponseWriter, r *http.Request) {
 }
 
 // Download 处理 GET /api/fs/download，经 http.ServeContent 支持 Range / ETag。
+//
+// 注意：http.ServeContent 要求 target.File 可 Seek。本地驱动返回 *os.File 天然满足；
+// 远程驱动须以「Range GET 惰性 reader」或「落临时文件」等方式提供可 Seek 语义。
 func (h *FileHandler) Download(w http.ResponseWriter, r *http.Request) {
 	apiPath := r.URL.Query().Get("path")
 	if apiPath == "" {
@@ -141,14 +148,15 @@ func (h *FileHandler) Download(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	target, err := h.files.OpenForDownload(apiPath)
+	target, err := h.files.OpenForDownload(r.Context(), apiPath)
 	if err != nil {
 		failFileErr(w, err)
 		return
 	}
 	defer target.File.Close()
 
-	name := target.Info.Name()
+	name := target.Info.Name
+	modTime := target.Info.ModTime
 
 	// Content-Type 由扩展名推导，缺省交给 ServeContent 嗅探。
 	if ct := mime.TypeByExtension(strings.ToLower(path.Ext(name))); ct != "" {
@@ -156,8 +164,8 @@ func (h *FileHandler) Download(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ETag 由 size + modTime 派生，支持 If-None-Match。
-	etag := `"` + strconv.FormatInt(target.Info.Size(), 10) + "-" +
-		strconv.FormatInt(target.ModTime.UnixNano(), 10) + `"`
+	etag := `"` + strconv.FormatInt(target.Info.Size, 10) + "-" +
+		strconv.FormatInt(modTime.UnixNano(), 10) + `"`
 	w.Header().Set("ETag", etag)
 
 	// 默认内联（便于媒体直链），download=1 时强制附件下载。
@@ -168,7 +176,7 @@ func (h *FileHandler) Download(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", disposition+"; filename*=UTF-8''"+urlEncode(name))
 
 	// ServeContent 自动处理 Range / If-Range / If-None-Match / Last-Modified。
-	http.ServeContent(w, r, name, target.ModTime, target.File)
+	http.ServeContent(w, r, name, modTime, target.File)
 }
 
 type pathRequest struct {
@@ -186,7 +194,7 @@ func (h *FileHandler) Mkdir(w http.ResponseWriter, r *http.Request) {
 		failBadRequest(w, "path required")
 		return
 	}
-	resPath, err := h.files.Mkdir(req.Path)
+	resPath, err := h.files.Mkdir(r.Context(), req.Path)
 	if err != nil {
 		h.audit(r, "mkdir", req.Path, "fail")
 		failFileErr(w, err)
@@ -203,7 +211,7 @@ func (h *FileHandler) Touch(w http.ResponseWriter, r *http.Request) {
 		failBadRequest(w, "path required")
 		return
 	}
-	resPath, err := h.files.Touch(req.Path)
+	resPath, err := h.files.Touch(r.Context(), req.Path)
 	if err != nil {
 		h.audit(r, "touch", req.Path, "fail")
 		failFileErr(w, err)
@@ -229,7 +237,7 @@ func (h *FileHandler) Move(w http.ResponseWriter, r *http.Request) {
 		failBadRequest(w, "src and dst required")
 		return
 	}
-	results := h.files.Move(req.Src, req.Dst)
+	results := h.files.Move(r.Context(), req.Src, req.Dst)
 	for _, res := range results {
 		h.audit(r, "move", res.Src+" -> "+req.Dst, auditResult(res.OK))
 	}
@@ -247,7 +255,7 @@ func (h *FileHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		failBadRequest(w, "paths required")
 		return
 	}
-	results := h.files.Delete(req.Paths)
+	results := h.files.Delete(r.Context(), req.Paths)
 	for _, res := range results {
 		h.audit(r, "delete", res.Src, auditResult(res.OK))
 	}

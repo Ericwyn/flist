@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"flist/internal/model"
+	"flist/internal/storage/local"
 	"flist/internal/util"
 )
 
@@ -20,7 +22,7 @@ func setupTestRoot(t *testing.T) (*FileService, string) {
 	if err != nil {
 		t.Fatalf("ResolveRoot: %v", err)
 	}
-	return NewFileService(real), real
+	return NewFileService(local.New(real)), real
 }
 
 func writeFile(t *testing.T, root, rel, content string) {
@@ -42,7 +44,7 @@ func TestList_BasicAndDirFirst(t *testing.T) {
 	writeFile(t, root, "b.txt", "bb")
 	writeFile(t, root, "a.txt", "a")
 
-	res, err := svc.List("/", ListOptions{Sort: "name", Order: "asc"})
+	res, err := svc.List(context.Background(), "/", ListOptions{Sort: "name", Order: "asc"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +65,7 @@ func TestList_SortSizeDesc(t *testing.T) {
 	writeFile(t, root, "small.txt", "x")
 	writeFile(t, root, "big.txt", strings.Repeat("y", 100))
 
-	res, err := svc.List("/", ListOptions{Sort: "size", Order: "desc"})
+	res, err := svc.List(context.Background(), "/", ListOptions{Sort: "size", Order: "desc"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,12 +79,12 @@ func TestList_HiddenFilter(t *testing.T) {
 	writeFile(t, root, ".hidden", "h")
 	writeFile(t, root, "visible.txt", "v")
 
-	res, _ := svc.List("/", ListOptions{})
+	res, _ := svc.List(context.Background(), "/", ListOptions{})
 	if res.Total != 1 || res.Items[0].Name != "visible.txt" {
 		t.Errorf("hidden file should be filtered, got total=%d", res.Total)
 	}
 
-	res2, _ := svc.List("/", ListOptions{ShowHidden: true})
+	res2, _ := svc.List(context.Background(), "/", ListOptions{ShowHidden: true})
 	if res2.Total != 2 {
 		t.Errorf("show_hidden should include dotfile, got total=%d", res2.Total)
 	}
@@ -93,7 +95,7 @@ func TestList_Paging(t *testing.T) {
 	for _, n := range []string{"f1", "f2", "f3", "f4", "f5"} {
 		writeFile(t, root, n+".txt", "x")
 	}
-	res, err := svc.List("/", ListOptions{Sort: "name", Page: 2, PageSize: 2})
+	res, err := svc.List(context.Background(), "/", ListOptions{Sort: "name", Page: 2, PageSize: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +114,7 @@ func TestList_Paging(t *testing.T) {
 func TestList_NotADir(t *testing.T) {
 	svc, root := setupTestRoot(t)
 	writeFile(t, root, "file.txt", "x")
-	if _, err := svc.List("/file.txt", ListOptions{}); err != ErrNotDir {
+	if _, err := svc.List(context.Background(), "/file.txt", ListOptions{}); err != ErrNotDir {
 		t.Errorf("expected ErrNotDir, got %v", err)
 	}
 }
@@ -124,7 +126,7 @@ func TestList_Traversal(t *testing.T) {
 
 	// 越根路径 /../../sub 经 CleanAPIPath 钳制为 /sub，仍落在 root 内，
 	// 应成功列出 root/sub 而非逃逸到真实文件系统。
-	res, err := svc.List("/../../sub", ListOptions{})
+	res, err := svc.List(context.Background(), "/../../sub", ListOptions{})
 	if err != nil {
 		t.Fatalf("clamped traversal should resolve within root, got %v", err)
 	}
@@ -140,7 +142,7 @@ func TestStat(t *testing.T) {
 	svc, root := setupTestRoot(t)
 	writeFile(t, root, "doc.txt", "hello")
 
-	info, err := svc.Stat("/doc.txt")
+	info, err := svc.Stat(context.Background(), "/doc.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +150,7 @@ func TestStat(t *testing.T) {
 		t.Errorf("unexpected stat: %+v", info)
 	}
 
-	if _, err := svc.Stat("/nonexistent"); err != ErrNotFound {
+	if _, err := svc.Stat(context.Background(), "/nonexistent"); err != ErrNotFound {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -157,7 +159,7 @@ func TestPreview_Text(t *testing.T) {
 	svc, root := setupTestRoot(t)
 	writeFile(t, root, "note.txt", "hello world")
 
-	res, err := svc.PreviewText("/note.txt")
+	res, err := svc.PreviewText(context.Background(), "/note.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +176,7 @@ func TestPreview_Truncated(t *testing.T) {
 	big := strings.Repeat("a", previewMaxBytes+100)
 	writeFile(t, root, "big.txt", big)
 
-	res, err := svc.PreviewText("/big.txt")
+	res, err := svc.PreviewText(context.Background(), "/big.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +194,7 @@ func TestPreview_Binary(t *testing.T) {
 	if err := os.WriteFile(full, []byte{0x00, 0x01, 0x02, 0xff}, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, err := svc.PreviewText("/data.bin")
+	res, err := svc.PreviewText(context.Background(), "/data.bin")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +206,7 @@ func TestPreview_Binary(t *testing.T) {
 func TestPreview_ImageType(t *testing.T) {
 	svc, root := setupTestRoot(t)
 	writeFile(t, root, "pic.png", "fakepng")
-	res, err := svc.PreviewText("/pic.png")
+	res, err := svc.PreviewText(context.Background(), "/pic.png")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +220,7 @@ func TestPreview_Dir(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "adir"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.PreviewText("/adir"); err != ErrNotFile {
+	if _, err := svc.PreviewText(context.Background(), "/adir"); err != ErrNotFile {
 		t.Errorf("expected ErrNotFile for dir, got %v", err)
 	}
 }
@@ -227,16 +229,16 @@ func TestOpenForDownload(t *testing.T) {
 	svc, root := setupTestRoot(t)
 	writeFile(t, root, "dl.txt", "download me")
 
-	target, err := svc.OpenForDownload("/dl.txt")
+	target, err := svc.OpenForDownload(context.Background(), "/dl.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer target.File.Close()
-	if target.Info.Size() != 11 {
-		t.Errorf("unexpected size: %d", target.Info.Size())
+	if target.Info.Size != 11 {
+		t.Errorf("unexpected size: %d", target.Info.Size)
 	}
 
-	if _, err := svc.OpenForDownload("/"); err != ErrNotFile {
+	if _, err := svc.OpenForDownload(context.Background(), "/"); err != ErrNotFile {
 		t.Errorf("expected ErrNotFile for root dir, got %v", err)
 	}
 }
@@ -251,7 +253,7 @@ func TestList_SymlinkInternal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := svc.List("/", ListOptions{Sort: "name"})
+	res, err := svc.List(context.Background(), "/", ListOptions{Sort: "name"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +290,7 @@ func TestList_SymlinkEscape(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := svc.List("/", ListOptions{Sort: "name"})
+	res, err := svc.List(context.Background(), "/", ListOptions{Sort: "name"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +322,7 @@ func TestSortStableMtime(t *testing.T) {
 	os.Chtimes(filepath.Join(root, "old.txt"), old, old)
 	os.Chtimes(filepath.Join(root, "new.txt"), recent, recent)
 
-	res, _ := svc.List("/", ListOptions{Sort: "mtime", Order: "asc"})
+	res, _ := svc.List(context.Background(), "/", ListOptions{Sort: "mtime", Order: "asc"})
 	if res.Items[0].Name != "old.txt" {
 		t.Errorf("mtime asc should put old first, got %s", res.Items[0].Name)
 	}

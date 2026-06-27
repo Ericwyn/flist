@@ -13,6 +13,7 @@ import (
 
 	"flist/internal/config"
 	"flist/internal/service"
+	"flist/internal/storage/local"
 	"flist/internal/store"
 	"flist/internal/util"
 )
@@ -41,7 +42,7 @@ func newFSTestServer(t *testing.T) (http.Handler, string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	files := service.NewFileService(rootReal)
+	files := service.NewFileService(local.New(rootReal))
 
 	router, err := NewRouter(Deps{
 		Config: &config.Config{SessionTTL: time.Hour},

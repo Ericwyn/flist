@@ -1,29 +1,33 @@
+// Package service 实现业务编排层。
+//
+// FileService 不再直接操作 OS 文件系统，而是面向 storage.Backend 接口做后端无关的
+// 编排：排序 / 分页、搜索匹配与超时 / 截断、预览文本嗅探、批量结果聚合、能力校验。
+// 具体的寻址、路径安全、符号链接、权限语义等由各驱动（local / webdav / Mux）负责。
 package service
 
 import (
 	"context"
 	"errors"
 	"io"
-	"io/fs"
-	"os"
 	"path"
-	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"flist/internal/model"
+	"flist/internal/storage"
 	"flist/internal/util"
 )
 
-// 文件服务层错误，handler 据此映射错误码。
+// 文件服务层错误，handler 据此映射错误码。统一复用 storage 错误词表，
+// 使「驱动 → 服务 → handler」三层共享同一组错误值（errors.Is 可直接命中）。
 var (
-	ErrNotFound  = errors.New("path not found")
-	ErrNotDir    = errors.New("not a directory")
-	ErrNotFile   = errors.New("not a regular file")
-	ErrForbidden = errors.New("permission denied")
-	ErrExists    = errors.New("target already exists")
-	ErrBadOp     = errors.New("invalid operation")
+	ErrNotFound     = storage.ErrNotFound
+	ErrNotDir       = storage.ErrNotDir
+	ErrNotFile      = storage.ErrNotFile
+	ErrForbidden    = storage.ErrForbidden
+	ErrExists       = storage.ErrExists
+	ErrBadOp        = storage.ErrBadOp
+	ErrNotSupported = storage.ErrNotSupported
 )
 
 const (
@@ -36,9 +40,6 @@ const (
 	maxSearchLimit     = 1000
 )
 
-// errStopWalk 是搜索遍历提前结束的哨兵错误（命中上限或超时），非真正错误。
-var errStopWalk = errors.New("stop walk")
-
 // ListOptions 控制目录列表的排序、分页与隐藏文件展示。
 type ListOptions struct {
 	Sort       string // name | size | mtime
@@ -48,65 +49,22 @@ type ListOptions struct {
 	PageSize   int
 }
 
-// FileService 提供只读文件操作，持有启动时缓存的 rootReal。
+// FileService 提供文件操作编排，委托具体存取给注入的 storage.Backend。
 type FileService struct {
-	rootReal string
+	backend storage.Backend
 }
 
-// NewFileService 构造文件服务。rootReal 必须是已标准化的绝对真实路径。
-func NewFileService(rootReal string) *FileService {
-	return &FileService{rootReal: rootReal}
+// NewFileService 构造文件服务。backend 为存储驱动（local / Mux / 远程驱动）。
+func NewFileService(backend storage.Backend) *FileService {
+	return &FileService{backend: backend}
 }
 
-// mapPathErr 将底层 OS 错误归一化为服务层错误。
-func mapPathErr(err error) error {
-	switch {
-	case err == nil:
-		return nil
-	case errors.Is(err, util.ErrPathTraversal):
-		return util.ErrPathTraversal
-	case errors.Is(err, os.ErrNotExist):
-		return ErrNotFound
-	case errors.Is(err, os.ErrPermission):
-		return ErrForbidden
-	default:
-		return err
-	}
-}
-
-// List 列出目录内容，支持排序、隐藏过滤与分页。
-func (s *FileService) List(apiPath string, opts ListOptions) (*model.ListResult, error) {
+// List 列出目录内容，支持排序、隐藏过滤与分页。排序 / 分页在服务层完成（后端无关）。
+func (s *FileService) List(ctx context.Context, apiPath string, opts ListOptions) (*model.ListResult, error) {
 	cleaned := util.CleanAPIPath(apiPath)
-	local, err := util.SafeResolve(s.rootReal, cleaned)
+	items, err := s.backend.List(ctx, cleaned, opts.ShowHidden)
 	if err != nil {
-		return nil, mapPathErr(err)
-	}
-
-	info, err := os.Stat(local)
-	if err != nil {
-		return nil, mapPathErr(err)
-	}
-	if !info.IsDir() {
-		return nil, ErrNotDir
-	}
-
-	dirEntries, err := os.ReadDir(local)
-	if err != nil {
-		return nil, mapPathErr(err)
-	}
-
-	items := make([]model.FileInfo, 0, len(dirEntries))
-	for _, de := range dirEntries {
-		name := de.Name()
-		fi, lerr := de.Info() // 等价于 Lstat：不跟随符号链接
-		if lerr != nil {
-			// 单条失败降级跳过，不中断整个目录。
-			continue
-		}
-		if !opts.ShowHidden && util.IsHidden(name, fi) {
-			continue
-		}
-		items = append(items, s.buildFileInfo(cleaned, name, fi))
+		return nil, err
 	}
 
 	total := len(items)
@@ -131,70 +89,42 @@ func (s *FileService) List(apiPath string, opts ListOptions) (*model.ListResult,
 	}, nil
 }
 
-// Stat 返回单个文件/目录信息。
-func (s *FileService) Stat(apiPath string) (*model.FileInfo, error) {
-	cleaned := util.CleanAPIPath(apiPath)
-	local, err := util.SafeResolve(s.rootReal, cleaned)
-	if err != nil {
-		return nil, mapPathErr(err)
-	}
-	fi, err := os.Lstat(local)
-	if err != nil {
-		return nil, mapPathErr(err)
-	}
-	parent := path.Dir(cleaned)
-	info := s.buildFileInfo(parent, fi.Name(), fi)
-	return &info, nil
+// Stat 返回单个文件 / 目录信息。
+func (s *FileService) Stat(ctx context.Context, apiPath string) (*model.FileInfo, error) {
+	return s.backend.Stat(ctx, util.CleanAPIPath(apiPath))
 }
 
 // PreviewText 读取文本文件的前 N 字节预览；非文本返回类型提示但不含内容。
-func (s *FileService) PreviewText(apiPath string) (*model.PreviewResult, error) {
-	cleaned := util.CleanAPIPath(apiPath)
-	local, err := util.SafeResolve(s.rootReal, cleaned)
+func (s *FileService) PreviewText(ctx context.Context, apiPath string) (*model.PreviewResult, error) {
+	f, info, err := s.backend.Open(ctx, util.CleanAPIPath(apiPath))
 	if err != nil {
-		return nil, mapPathErr(err)
-	}
-	fi, err := os.Stat(local)
-	if err != nil {
-		return nil, mapPathErr(err)
-	}
-	if fi.IsDir() {
-		return nil, ErrNotFile
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, ErrNotFile
-	}
-
-	f, err := os.Open(local)
-	if err != nil {
-		return nil, mapPathErr(err)
+		return nil, err
 	}
 	defer f.Close()
 
 	buf := make([]byte, previewMaxBytes)
 	n, err := io.ReadFull(f, buf)
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-		return nil, mapPathErr(err)
+		return nil, err
 	}
 	data := buf[:n]
 
 	res := &model.PreviewResult{
-		Size:         fi.Size(),
+		Size:         info.Size,
 		PreviewBytes: previewMaxBytes,
 	}
 
-	// 文本判定：扩展名白名单优先，否则对样本做二进制嗅探。
 	sample := data
 	if len(sample) > sniffBytes {
 		sample = sample[:sniffBytes]
 	}
-	isText := util.IsTextExt(fi.Name()) || (util.DetectKind(fi.Name()) == util.KindUnknown && util.SniffText(sample))
-	// 若扩展名属于已知二进制媒体类型，直接给出类型提示。
-	kind := util.DetectKind(fi.Name())
+	// 已知二进制媒体类型直接给出类型提示，无需嗅探内容。
+	kind := util.DetectKind(info.Name)
 	if kind == util.KindImage || kind == util.KindVideo || kind == util.KindAudio {
 		res.Type = string(kind)
 		return res, nil
 	}
+	isText := util.IsTextExt(info.Name) || (kind == util.KindUnknown && util.SniffText(sample))
 	if !isText || !util.SniffText(sample) {
 		res.Type = "binary"
 		return res, nil
@@ -202,91 +132,237 @@ func (s *FileService) PreviewText(apiPath string) (*model.PreviewResult, error) 
 
 	res.Type = "text"
 	res.Content = string(data)
-	res.Truncated = fi.Size() > int64(n)
+	res.Truncated = info.Size > int64(n)
 	return res, nil
 }
 
-// DownloadTarget 是下载所需的打开文件与元信息，调用方负责关闭 File。
+// DownloadTarget 是下载所需的文件句柄与元信息，调用方负责关闭 File。
 type DownloadTarget struct {
-	File    *os.File
-	Info    os.FileInfo
-	ModTime time.Time
+	File storage.File
+	Info *model.FileInfo
 }
 
 // OpenForDownload 打开普通文件供下载，返回的 File 由调用方关闭。
-func (s *FileService) OpenForDownload(apiPath string) (*DownloadTarget, error) {
+func (s *FileService) OpenForDownload(ctx context.Context, apiPath string) (*DownloadTarget, error) {
+	f, info, err := s.backend.Open(ctx, util.CleanAPIPath(apiPath))
+	if err != nil {
+		return nil, err
+	}
+	return &DownloadTarget{File: f, Info: info}, nil
+}
+
+// Mkdir 创建单层目录，返回规范化后的 API 路径。
+func (s *FileService) Mkdir(ctx context.Context, apiPath string) (string, error) {
 	cleaned := util.CleanAPIPath(apiPath)
-	local, err := util.SafeResolve(s.rootReal, cleaned)
-	if err != nil {
-		return nil, mapPathErr(err)
+	if err := s.backend.Mkdir(ctx, cleaned); err != nil {
+		return "", err
 	}
-	fi, err := os.Stat(local)
-	if err != nil {
-		return nil, mapPathErr(err)
-	}
-	if fi.IsDir() {
-		return nil, ErrNotFile
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, ErrNotFile
-	}
-	f, err := os.Open(local)
-	if err != nil {
-		return nil, mapPathErr(err)
-	}
-	return &DownloadTarget{File: f, Info: fi, ModTime: fi.ModTime()}, nil
+	return cleaned, nil
 }
 
-// buildFileInfo 由 Lstat 结果组装 FileInfo，处理符号链接展示。
-// parentAPIPath 为该条目所在目录的 API 路径，用于拼接符号链接目标。
-func (s *FileService) buildFileInfo(parentAPIPath, name string, fi os.FileInfo) model.FileInfo {
-	out := model.FileInfo{
-		Name:    name,
-		Mode:    util.FormatMode(fi.Mode()),
-		ModTime: fi.ModTime(),
+// Touch 创建空文件，返回规范化后的 API 路径。
+func (s *FileService) Touch(ctx context.Context, apiPath string) (string, error) {
+	cleaned := util.CleanAPIPath(apiPath)
+	if err := s.backend.Create(ctx, cleaned); err != nil {
+		return "", err
 	}
-
-	isSymlink := fi.Mode()&os.ModeSymlink != 0
-	out.IsSymlink = isSymlink
-
-	if fi.IsDir() {
-		out.Type = model.TypeDir
-	} else {
-		out.Type = model.TypeFile
-		out.Size = fi.Size()
-	}
-
-	if isSymlink {
-		s.resolveSymlink(parentAPIPath, name, &out)
-	}
-	return out
+	return cleaned, nil
 }
 
-// resolveSymlink 尽力解析符号链接：目标仍在 root 内则填 SymlinkTarget 与真实类型，
-// 越界或解析失败则标记 Unreachable。
-func (s *FileService) resolveSymlink(parentAPIPath, name string, out *model.FileInfo) {
-	linkAPIPath := path.Join(parentAPIPath, name)
-	target, err := util.SafeResolve(s.rootReal, linkAPIPath)
+// Move 批量移动 / 重命名，尽力而为，逐项返回结果。dst 语义见 docs/4.phase2 §5.3。
+// dst 是否为已存在目录的判定（决定「移入」还是「重命名」）在服务层经 backend.Stat 完成，
+// 单项的落点冲突 / 越界 / 自身子树等校验由 backend.Move 负责。
+func (s *FileService) Move(ctx context.Context, srcs []string, dst string) []model.OpResult {
+	results := make([]model.OpResult, 0, len(srcs))
+	cleanedDst := util.CleanAPIPath(dst)
+
+	dstExists, dstIsDir := false, false
+	if info, err := s.backend.Stat(ctx, cleanedDst); err == nil {
+		dstExists = true
+		dstIsDir = info.Type == model.TypeDir
+	}
+
+	for _, src := range srcs {
+		srcClean := util.CleanAPIPath(src)
+		var targetAPI string
+		if dstExists && dstIsDir {
+			// dst 是已存在目录：移入该目录，落点为 dst/basename。
+			targetAPI = path.Join(cleanedDst, path.Base(srcClean))
+		} else {
+			// dst 不存在或为已存在文件：按「重命名 / 移动到指定名」处理，仅单个 src 合法。
+			if len(srcs) != 1 {
+				results = append(results, opFail(srcClean, storage.ErrNotDir))
+				continue
+			}
+			targetAPI = cleanedDst
+		}
+		if err := s.backend.Move(ctx, srcClean, targetAPI); err != nil {
+			results = append(results, opFail(srcClean, err))
+		} else {
+			results = append(results, model.OpResult{Src: srcClean, OK: true})
+		}
+	}
+	return results
+}
+
+// Copy 批量复制，尽力而为，逐项返回结果。dst 语义与 Move 一致（Phase 3 启用接口）。
+func (s *FileService) Copy(ctx context.Context, srcs []string, dst string) []model.OpResult {
+	results := make([]model.OpResult, 0, len(srcs))
+	cleanedDst := util.CleanAPIPath(dst)
+
+	dstExists, dstIsDir := false, false
+	if info, err := s.backend.Stat(ctx, cleanedDst); err == nil {
+		dstExists = true
+		dstIsDir = info.Type == model.TypeDir
+	}
+
+	for _, src := range srcs {
+		srcClean := util.CleanAPIPath(src)
+		var targetAPI string
+		if dstExists && dstIsDir {
+			targetAPI = path.Join(cleanedDst, path.Base(srcClean))
+		} else {
+			if len(srcs) != 1 {
+				results = append(results, opFail(srcClean, storage.ErrNotDir))
+				continue
+			}
+			targetAPI = cleanedDst
+		}
+		if err := s.backend.Copy(ctx, srcClean, targetAPI); err != nil {
+			results = append(results, opFail(srcClean, err))
+		} else {
+			results = append(results, model.OpResult{Src: srcClean, OK: true})
+		}
+	}
+	return results
+}
+
+// Delete 批量递归删除，尽力而为，逐项返回结果。root 自身保护等由 backend.Remove 负责。
+func (s *FileService) Delete(ctx context.Context, paths []string) []model.OpResult {
+	results := make([]model.OpResult, 0, len(paths))
+	for _, p := range paths {
+		cleaned := util.CleanAPIPath(p)
+		if err := s.backend.Remove(ctx, cleaned); err != nil {
+			results = append(results, opFail(cleaned, err))
+		} else {
+			results = append(results, model.OpResult{Src: cleaned, OK: true})
+		}
+	}
+	return results
+}
+
+// SearchOptions 控制搜索行为。
+type SearchOptions struct {
+	Recursive  bool
+	ShowHidden bool
+	Limit      int
+}
+
+// Search 按文件名匹配搜索。递归遍历优先用驱动的 Walker（高效），否则退化为基于
+// List 的逐层递归。受 ctx 超时与命中上限保护。
+func (s *FileService) Search(ctx context.Context, base, query string, opts SearchOptions) (*model.SearchResult, error) {
+	cleaned := util.CleanAPIPath(base)
+
+	limit := opts.Limit
+	if limit < 1 {
+		limit = defaultSearchLimit
+	}
+	if limit > maxSearchLimit {
+		limit = maxSearchLimit
+	}
+
+	isGlob := strings.ContainsAny(query, "*?")
+	lowerQuery := strings.ToLower(query)
+	match := func(name string) bool {
+		if isGlob {
+			ok, err := path.Match(query, name)
+			return err == nil && ok
+		}
+		return strings.Contains(strings.ToLower(name), lowerQuery)
+	}
+
+	res := &model.SearchResult{Query: query, Base: cleaned, Items: []model.SearchHit{}}
+
+	visit := func(rel string, info model.FileInfo) error {
+		if !match(info.Name) {
+			return nil
+		}
+		if len(res.Items) >= limit {
+			res.Truncated = true
+			return storage.ErrStopWalk
+		}
+		res.Items = append(res.Items, makeHit(path.Join(cleaned, rel), info))
+		return nil
+	}
+
+	if opts.Recursive {
+		err := s.walk(ctx, cleaned, opts.ShowHidden, visit)
+		switch {
+		case errors.Is(err, storage.ErrStopWalk):
+			return res, nil
+		case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+			res.TimedOut = true
+			return res, nil
+		case err != nil:
+			return nil, err
+		}
+		return res, nil
+	}
+
+	// 非递归：仅匹配 base 目录下的直接子项。
+	items, err := s.backend.List(ctx, cleaned, opts.ShowHidden)
 	if err != nil {
-		out.Unreachable = true
-		return
+		return nil, err
 	}
-	ti, err := os.Stat(target) // 跟随链接取目标信息
+	for _, it := range items {
+		if !match(it.Name) {
+			continue
+		}
+		if len(res.Items) >= limit {
+			res.Truncated = true
+			break
+		}
+		res.Items = append(res.Items, makeHit(path.Join(cleaned, it.Name), it))
+	}
+	return res, nil
+}
+
+// walk 递归遍历：驱动实现 Walker 则用之（高效），否则退化为基于 List 的逐层递归。
+// 回调返回 storage.ErrStopWalk 或 ctx 取消时原样向上传播，由 Search 解释为截断 / 超时。
+func (s *FileService) walk(ctx context.Context, root string, showHidden bool, fn func(string, model.FileInfo) error) error {
+	if w, ok := s.backend.(storage.Walker); ok {
+		return w.Walk(ctx, root, showHidden, fn)
+	}
+	return s.walkViaList(ctx, root, "", showHidden, fn)
+}
+
+// walkViaList 对不支持 Walker 的驱动的兜底递归实现。relPrefix 为相对搜索起点的路径前缀。
+func (s *FileService) walkViaList(ctx context.Context, curPath, relPrefix string, showHidden bool, fn func(string, model.FileInfo) error) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	items, err := s.backend.List(ctx, curPath, showHidden)
 	if err != nil {
-		out.Unreachable = true
-		return
+		return err
 	}
-	// 将真实本地路径转回相对 root 的 API 路径。
-	rel := strings.TrimPrefix(target, s.rootReal)
-	rel = util.CleanAPIPath(util.ToAPIPath(rel))
-	out.SymlinkTarget = rel
-	if ti.IsDir() {
-		out.Type = model.TypeDir
-		out.Size = 0
-	} else {
-		out.Type = model.TypeFile
-		out.Size = ti.Size()
+	for _, it := range items {
+		rel := it.Name
+		if relPrefix != "" {
+			rel = relPrefix + "/" + it.Name
+		}
+		if err := fn(rel, it); err != nil {
+			return err
+		}
+		if it.Type == model.TypeDir {
+			child := path.Join(curPath, it.Name)
+			if err := s.walkViaList(ctx, child, rel, showHidden, fn); err != nil {
+				return err
+			}
+		}
 	}
+	return nil
 }
 
 // sortItems 按目录优先 + 指定键 + 升降序排序。
@@ -294,11 +370,10 @@ func sortItems(items []model.FileInfo, sortKey, order string) {
 	desc := order == "desc"
 	less := func(i, j int) bool {
 		a, b := items[i], items[j]
-		// 目录优先，不受 order 影响。
 		aDir := a.Type == model.TypeDir
 		bDir := b.Type == model.TypeDir
 		if aDir != bDir {
-			return aDir
+			return aDir // 目录优先，不受 order 影响
 		}
 		var result bool
 		switch sortKey {
@@ -339,289 +414,16 @@ func normalizePaging(page, pageSize int) (int, int) {
 	return page, pageSize
 }
 
-// Mkdir 创建单层目录。父目录须存在，basename 经文件名校验，目标已存在则冲突。
-// 返回规范化后的 API 路径。
-func (s *FileService) Mkdir(apiPath string) (string, error) {
-	cleaned := util.CleanAPIPath(apiPath)
-	if cleaned == "/" {
-		return "", ErrExists // root 已存在
-	}
-	if err := util.ValidateName(path.Base(cleaned)); err != nil {
-		return "", util.ErrNameInvalid
-	}
-	local, err := util.SafeResolve(s.rootReal, cleaned)
-	if err != nil {
-		return "", mapPathErr(err)
-	}
-	// 父目录必须存在（仅建单层，不递归创建）。
-	if _, err := os.Stat(filepath.Dir(local)); err != nil {
-		return "", mapPathErr(err)
-	}
-	if err := os.Mkdir(local, 0o755); err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return "", ErrExists
-		}
-		return "", mapPathErr(err)
-	}
-	return cleaned, nil
-}
-
-// Touch 创建空文件。父目录须存在，basename 经文件名校验，目标已存在则冲突（不 truncate）。
-// 返回规范化后的 API 路径。
-func (s *FileService) Touch(apiPath string) (string, error) {
-	cleaned := util.CleanAPIPath(apiPath)
-	if cleaned == "/" {
-		return "", ErrExists
-	}
-	if err := util.ValidateName(path.Base(cleaned)); err != nil {
-		return "", util.ErrNameInvalid
-	}
-	local, err := util.SafeResolve(s.rootReal, cleaned)
-	if err != nil {
-		return "", mapPathErr(err)
-	}
-	if _, err := os.Stat(filepath.Dir(local)); err != nil {
-		return "", mapPathErr(err)
-	}
-	// O_CREATE|O_EXCL 保证「不存在才创建」的原子性。
-	f, err := os.OpenFile(local, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return "", ErrExists
-		}
-		return "", mapPathErr(err)
-	}
-	_ = f.Close()
-	return cleaned, nil
-}
-
-// Move 批量移动 / 重命名，尽力而为，逐项返回结果。dst 语义见 docs/4.phase2 §5.3。
-func (s *FileService) Move(srcs []string, dst string) []model.OpResult {
-	results := make([]model.OpResult, 0, len(srcs))
-	cleanedDst := util.CleanAPIPath(dst)
-
-	// 判定 dst 是否为已存在目录，决定「移入目录」还是「重命名」语义。
-	dstExists, dstIsDir := false, false
-	if dstLocal, derr := util.SafeResolve(s.rootReal, cleanedDst); derr == nil {
-		if fi, err := os.Stat(dstLocal); err == nil {
-			dstExists = true
-			dstIsDir = fi.IsDir()
-		}
-	}
-
-	for _, src := range srcs {
-		srcClean := util.CleanAPIPath(src)
-		var targetAPI string
-		if dstExists && dstIsDir {
-			// dst 是已存在目录：移入该目录，落点为 dst/basename。
-			targetAPI = path.Join(cleanedDst, path.Base(srcClean))
-		} else {
-			// dst 不存在或为已存在文件：按「重命名 / 移动到指定名」处理，仅单个 src 合法。
-			// 落点已存在（含 dst 是文件的情形）由 moveOne 的冲突检查返回 file_exists。
-			if len(srcs) != 1 {
-				results = append(results, opFail(srcClean, ErrNotDir))
-				continue
-			}
-			targetAPI = cleanedDst
-		}
-		results = append(results, s.moveOne(srcClean, targetAPI))
-	}
-	return results
-}
-
-// moveOne 执行单个移动 / 重命名。
-func (s *FileService) moveOne(srcAPI, dstAPI string) model.OpResult {
-	if srcAPI == "/" {
-		return opFail(srcAPI, ErrBadOp) // 不允许移动 root 自身
-	}
-	if err := util.ValidateName(path.Base(dstAPI)); err != nil {
-		return opFail(srcAPI, util.ErrNameInvalid)
-	}
-	srcLocal, err := util.SafeResolve(s.rootReal, srcAPI)
-	if err != nil {
-		return opFail(srcAPI, mapPathErr(err))
-	}
-	if _, err := os.Lstat(srcLocal); err != nil {
-		return opFail(srcAPI, mapPathErr(err))
-	}
-	dstLocal, err := util.SafeResolve(s.rootReal, dstAPI)
-	if err != nil {
-		return opFail(srcAPI, mapPathErr(err))
-	}
-	// 落点不得已存在（不覆盖）。
-	if _, err := os.Lstat(dstLocal); err == nil {
-		return opFail(srcAPI, ErrExists)
-	}
-	// 不允许把目录移动进其自身子树（含移动到自身）。
-	if isSubpath(srcLocal, dstLocal) {
-		return opFail(srcAPI, ErrBadOp)
-	}
-	if err := util.MovePath(srcLocal, dstLocal); err != nil {
-		return opFail(srcAPI, mapPathErr(err))
-	}
-	return model.OpResult{Src: srcAPI, OK: true}
-}
-
-// Delete 批量递归删除，尽力而为，逐项返回结果。禁止删除 root 自身。
-func (s *FileService) Delete(paths []string) []model.OpResult {
-	results := make([]model.OpResult, 0, len(paths))
-	for _, p := range paths {
-		cleaned := util.CleanAPIPath(p)
-		if cleaned == "/" {
-			results = append(results, opFail(cleaned, ErrBadOp))
-			continue
-		}
-		local, err := util.SafeResolve(s.rootReal, cleaned)
-		if err != nil {
-			results = append(results, opFail(cleaned, mapPathErr(err)))
-			continue
-		}
-		if _, err := os.Lstat(local); err != nil {
-			results = append(results, opFail(cleaned, mapPathErr(err)))
-			continue
-		}
-		if err := util.RemovePath(local); err != nil {
-			results = append(results, opFail(cleaned, mapPathErr(err)))
-			continue
-		}
-		results = append(results, model.OpResult{Src: cleaned, OK: true})
-	}
-	return results
-}
-
-// SearchOptions 控制搜索行为。
-type SearchOptions struct {
-	Recursive  bool
-	ShowHidden bool
-	Limit      int
-}
-
-// Search 按文件名匹配搜索。串行遍历，受 ctx 超时与命中上限保护。
-func (s *FileService) Search(ctx context.Context, base, query string, opts SearchOptions) (*model.SearchResult, error) {
-	cleaned := util.CleanAPIPath(base)
-	local, err := util.SafeResolve(s.rootReal, cleaned)
-	if err != nil {
-		return nil, mapPathErr(err)
-	}
-	fi, err := os.Stat(local)
-	if err != nil {
-		return nil, mapPathErr(err)
-	}
-	if !fi.IsDir() {
-		return nil, ErrNotDir
-	}
-
-	limit := opts.Limit
-	if limit < 1 {
-		limit = defaultSearchLimit
-	}
-	if limit > maxSearchLimit {
-		limit = maxSearchLimit
-	}
-
-	isGlob := strings.ContainsAny(query, "*?")
-	lowerQuery := strings.ToLower(query)
-	res := &model.SearchResult{Query: query, Base: cleaned, Items: []model.SearchHit{}}
-
-	match := func(name string) bool {
-		if isGlob {
-			ok, err := path.Match(query, name)
-			return err == nil && ok
-		}
-		return strings.Contains(strings.ToLower(name), lowerQuery)
-	}
-
-	if opts.Recursive {
-		s.searchRecursive(ctx, local, match, opts.ShowHidden, limit, res)
-	} else {
-		s.searchFlat(local, match, opts.ShowHidden, limit, res)
-	}
-	return res, nil
-}
-
-// searchFlat 仅匹配 base 目录下的直接子项（非递归）。
-func (s *FileService) searchFlat(dir string, match func(string) bool, showHidden bool, limit int, res *model.SearchResult) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	for _, de := range entries {
-		info, ierr := de.Info()
-		if ierr != nil {
-			continue
-		}
-		if !showHidden && util.IsHidden(de.Name(), info) {
-			continue
-		}
-		if !match(de.Name()) {
-			continue
-		}
-		if len(res.Items) >= limit {
-			res.Truncated = true
-			return
-		}
-		res.Items = append(res.Items, s.makeHit(filepath.Join(dir, de.Name()), info))
-	}
-}
-
-// searchRecursive 串行 WalkDir 遍历，受 ctx 与命中上限控制；不跟随符号链接。
-func (s *FileService) searchRecursive(ctx context.Context, root string, match func(string) bool, showHidden bool, limit int, res *model.SearchResult) {
-	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			// 单条不可读：目录则跳过其子树，文件则跳过自身。
-			if d != nil && d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			res.TimedOut = true
-			return errStopWalk
-		default:
-		}
-		if p == root {
-			return nil // 不把起点自身计入结果
-		}
-		info, ierr := d.Info()
-		if ierr != nil {
-			return nil
-		}
-		// 隐藏文件 / 目录过滤：隐藏目录直接跳过其子树。
-		if !showHidden && util.IsHidden(d.Name(), info) {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if match(d.Name()) {
-			if len(res.Items) >= limit {
-				res.Truncated = true
-				return errStopWalk
-			}
-			res.Items = append(res.Items, s.makeHit(p, info))
-		}
-		return nil
-	})
-}
-
-// makeHit 由本地路径与信息组装搜索命中（含转回 API 路径）。
-func (s *FileService) makeHit(localPath string, info os.FileInfo) model.SearchHit {
-	rel := strings.TrimPrefix(localPath, s.rootReal)
-	apiPath := util.CleanAPIPath(util.ToAPIPath(rel))
-	hit := model.SearchHit{
+// makeHit 由 API 路径与条目信息组装搜索命中。
+func makeHit(apiPath string, info model.FileInfo) model.SearchHit {
+	return model.SearchHit{
 		Path:    apiPath,
-		Name:    info.Name(),
-		Mode:    util.FormatMode(info.Mode()),
-		ModTime: info.ModTime(),
+		Name:    info.Name,
+		Type:    info.Type,
+		Size:    info.Size,
+		Mode:    info.Mode,
+		ModTime: info.ModTime,
 	}
-	if info.IsDir() {
-		hit.Type = model.TypeDir
-	} else {
-		hit.Type = model.TypeFile
-		hit.Size = info.Size()
-	}
-	return hit
 }
 
 // opFail 构造一条失败的批量操作结果。
@@ -629,38 +431,28 @@ func opFail(src string, err error) model.OpResult {
 	return model.OpResult{Src: src, OK: false, Error: errCodeName(err)}
 }
 
-// errCodeName 将服务层错误映射为对外的错误码名（与 handler 错误码表对应）。
+// errCodeName 将服务 / 驱动层错误映射为对外的错误码名（与 handler 错误码表对应）。
 func errCodeName(err error) string {
 	switch {
-	case errors.Is(err, util.ErrPathTraversal):
+	case errors.Is(err, storage.ErrTraversal):
 		return "path_traversal"
-	case errors.Is(err, util.ErrNameInvalid):
+	case errors.Is(err, storage.ErrInvalidName):
 		return "name_invalid"
-	case errors.Is(err, ErrNotFound):
+	case errors.Is(err, storage.ErrNotFound):
 		return "path_not_found"
-	case errors.Is(err, ErrForbidden):
+	case errors.Is(err, storage.ErrForbidden):
 		return "permission_denied"
-	case errors.Is(err, ErrExists):
+	case errors.Is(err, storage.ErrExists):
 		return "file_exists"
-	case errors.Is(err, ErrNotDir):
+	case errors.Is(err, storage.ErrNotDir):
 		return "not_a_dir"
-	case errors.Is(err, ErrNotFile):
+	case errors.Is(err, storage.ErrNotFile):
 		return "not_a_file"
-	case errors.Is(err, ErrBadOp):
+	case errors.Is(err, storage.ErrNotSupported):
+		return "not_supported"
+	case errors.Is(err, storage.ErrBadOp):
 		return "bad_request"
 	default:
 		return "internal_error"
 	}
-}
-
-// isSubpath 判断 child 是否等于 parent 或位于 parent 子树内。
-func isSubpath(parent, child string) bool {
-	if parent == child {
-		return true
-	}
-	p := parent
-	if !strings.HasSuffix(p, string(os.PathSeparator)) {
-		p += string(os.PathSeparator)
-	}
-	return strings.HasPrefix(child, p)
 }
