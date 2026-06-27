@@ -1,0 +1,8 @@
+{
+  "name": "Flist",
+  "description": "A modern, web-based file manager prototype for NAS, featuring file operations, media previews, and favorites.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
