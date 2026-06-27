@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { api, ApiError } from './lib/api';
-import { FileEntry } from './types';
-import { parentPath } from './lib/path';
+import { FileEntry, SearchHit } from './types';
+import { parentPath, joinPath } from './lib/path';
 import { useAuthStore } from './authStore';
 
 type SortKey = 'name' | 'size' | 'mtime';
@@ -26,6 +26,14 @@ interface FsState {
   previewEntry: FileEntry | null; // 当前预览的条目（含所在目录拼出的完整路径见 previewPath）
   previewPath: string | null;
 
+  // 搜索状态。
+  searchOpen: boolean;
+  searchQuery: string;
+  searching: boolean;
+  searchResults: SearchHit[];
+  searchTruncated: boolean;
+  searchTimedOut: boolean;
+
   navigate: (path: string, pushHistory?: boolean) => Promise<void>;
   initFromUrl: () => void;
   restore: (path: string, index: number) => void;
@@ -39,6 +47,16 @@ interface FsState {
   select: (name: string | null) => void;
   openPreview: (entry: FileEntry, fullPath: string) => void;
   closePreview: () => void;
+
+  // 写操作（成功后刷新当前目录）；返回错误信息字符串，成功返回 null。
+  mkdir: (name: string) => Promise<string | null>;
+  touch: (name: string) => Promise<string | null>;
+  rename: (entry: FileEntry, newName: string) => Promise<string | null>;
+  remove: (entries: FileEntry[]) => Promise<string | null>;
+
+  // 搜索。
+  runSearch: (query: string) => Promise<void>;
+  clearSearch: () => void;
 }
 
 // URL_PREFIX 为文件浏览路由的统一前缀，避免与 /api、/assets 等真实路径冲突
@@ -79,6 +97,13 @@ export const useFsStore = create<FsState>((set, get) => ({
   selected: null,
   previewEntry: null,
   previewPath: null,
+
+  searchOpen: false,
+  searchQuery: '',
+  searching: false,
+  searchResults: [],
+  searchTruncated: false,
+  searchTimedOut: false,
 
   navigate: async (path, pushHistory = true) => {
     const { sort, order, showHidden } = get();
@@ -179,7 +204,143 @@ export const useFsStore = create<FsState>((set, get) => ({
 
   openPreview: (entry, fullPath) => set({ previewEntry: entry, previewPath: fullPath }),
   closePreview: () => set({ previewEntry: null, previewPath: null }),
+
+  mkdir: async (name) => {
+    const target = joinPath(get().currentPath, name);
+    try {
+      await api.fs.mkdir(target);
+      await get().refresh();
+      return null;
+    } catch (e) {
+      handleError(e);
+      return errMessage(e);
+    }
+  },
+
+  touch: async (name) => {
+    const target = joinPath(get().currentPath, name);
+    try {
+      await api.fs.touch(target);
+      await get().refresh();
+      return null;
+    } catch (e) {
+      handleError(e);
+      return errMessage(e);
+    }
+  },
+
+  rename: async (entry, newName) => {
+    const from = joinPath(get().currentPath, entry.name);
+    try {
+      const res = await api.fs.rename(from, newName);
+      if (res && !res.ok) {
+        return opErrMessage(res.error);
+      }
+      await get().refresh();
+      return null;
+    } catch (e) {
+      handleError(e);
+      return errMessage(e);
+    }
+  },
+
+  remove: async (entries) => {
+    const paths = entries.map((e) => joinPath(get().currentPath, e.name));
+    try {
+      const results = await api.fs.remove(paths);
+      const failed = results.filter((r) => !r.ok);
+      await get().refresh();
+      if (failed.length > 0) {
+        return `${failed.length} 项删除失败：${opErrMessage(failed[0].error)}`;
+      }
+      return null;
+    } catch (e) {
+      handleError(e);
+      return errMessage(e);
+    }
+  },
+
+  runSearch: async (query) => {
+    const q = query.trim();
+    if (!q) {
+      get().clearSearch();
+      return;
+    }
+    set({ searchOpen: true, searchQuery: q, searching: true });
+    try {
+      const res = await api.fs.search(get().currentPath, q, { recursive: true, showHidden: get().showHidden });
+      set({
+        searching: false,
+        searchResults: res.items,
+        searchTruncated: res.truncated,
+        searchTimedOut: res.timedOut,
+      });
+    } catch (e) {
+      handleError(e);
+      set({ searching: false, searchResults: [], error: errMessage(e) });
+    }
+  },
+
+  clearSearch: () =>
+    set({
+      searchOpen: false,
+      searchQuery: '',
+      searching: false,
+      searchResults: [],
+      searchTruncated: false,
+      searchTimedOut: false,
+    }),
 }));
+
+// errMessage 提取异常的可读信息。
+function errMessage(e: unknown): string {
+  if (e instanceof ApiError) {
+    return apiCodeMessage(e.code) ?? e.message;
+  }
+  return e instanceof Error ? e.message : '操作失败';
+}
+
+// apiCodeMessage 将常见业务错误码翻译为中文提示。
+function apiCodeMessage(code: number): string | null {
+  switch (code) {
+    case 2001:
+      return '路径不存在';
+    case 2002:
+      return '路径越界';
+    case 2003:
+      return '权限不足';
+    case 2004:
+      return '目标已存在';
+    case 2006:
+      return '名称非法';
+    case 2008:
+      return '目标不是目录';
+    default:
+      return null;
+  }
+}
+
+// opErrMessage 将批量结果里的错误码名翻译为中文提示。
+function opErrMessage(name?: string): string {
+  switch (name) {
+    case 'file_exists':
+      return '目标已存在';
+    case 'name_invalid':
+      return '名称非法';
+    case 'path_not_found':
+      return '路径不存在';
+    case 'permission_denied':
+      return '权限不足';
+    case 'path_traversal':
+      return '路径越界';
+    case 'not_a_dir':
+      return '目标不是目录';
+    case 'bad_request':
+      return '非法操作';
+    default:
+      return '操作失败';
+  }
+}
 
 // handleError 在遇到 401（会话失效）时登出回到登录页。
 function handleError(e: unknown) {

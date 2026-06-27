@@ -35,7 +35,10 @@ func NewRouter(d Deps) (http.Handler, error) {
 
 	authHandler := handler.NewAuthHandler(d.Auth, d.Config.SessionTTL)
 	systemHandler := handler.NewSystemHandler()
-	fileHandler := handler.NewFileHandler(d.Files)
+	fileHandler := handler.NewFileHandler(d.Files, d.Logger)
+
+	// 写操作限流：10/s per IP（见 0.backend-design.md §9.3）。
+	writeLimit := mw.NewWriteRateLimiter(10, 10)
 
 	r.Route("/api", func(api chi.Router) {
 		// 公开路由（无需认证）。
@@ -57,6 +60,18 @@ func NewRouter(d Deps) (http.Handler, error) {
 			protected.Get("/fs/stat", fileHandler.Stat)
 			protected.Get("/fs/preview", fileHandler.Preview)
 			protected.Get("/fs/download", fileHandler.Download)
+
+			// Phase 2 搜索（只读，仅受全局限流 + 自身超时/数量上限保护）。
+			protected.Get("/fs/search", fileHandler.Search)
+
+			// Phase 2 写操作（额外套写限流 10/s）。
+			protected.Group(func(wr chi.Router) {
+				wr.Use(writeLimit)
+				wr.Post("/fs/mkdir", fileHandler.Mkdir)
+				wr.Post("/fs/touch", fileHandler.Touch)
+				wr.Post("/fs/move", fileHandler.Move)
+				wr.Delete("/fs/delete", fileHandler.Delete)
+			})
 		})
 
 		// 未匹配的 API 路径返回 404（统一信封）。

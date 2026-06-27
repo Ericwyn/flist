@@ -1,25 +1,37 @@
 package handler
 
 import (
+	"context"
 	"errors"
+	"log/slog"
 	"mime"
 	"net/http"
 	"path"
 	"strconv"
 	"strings"
+	"time"
 
+	"flist/internal/middleware"
+	"flist/internal/model"
 	"flist/internal/service"
 	"flist/internal/util"
 )
 
-// FileHandler 处理只读文件操作接口。
+// searchTimeout 限制单次搜索遍历的最长耗时。
+const searchTimeout = 30 * time.Second
+
+// FileHandler 处理文件操作接口（只读 + 写）。
 type FileHandler struct {
-	files *service.FileService
+	files  *service.FileService
+	logger *slog.Logger
 }
 
-// NewFileHandler 构造文件处理器。
-func NewFileHandler(files *service.FileService) *FileHandler {
-	return &FileHandler{files: files}
+// NewFileHandler 构造文件处理器。logger 用于写操作审计，为 nil 时回落到默认 logger。
+func NewFileHandler(files *service.FileService, logger *slog.Logger) *FileHandler {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &FileHandler{files: files, logger: logger}
 }
 
 // failFileErr 将服务层错误映射为统一错误响应。
@@ -27,10 +39,14 @@ func failFileErr(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, util.ErrPathTraversal):
 		Fail(w, http.StatusBadRequest, CodePathTraversal, "path_traversal")
+	case errors.Is(err, util.ErrNameInvalid):
+		Fail(w, http.StatusBadRequest, CodeNameInvalid, "name_invalid")
 	case errors.Is(err, service.ErrNotFound):
 		Fail(w, http.StatusNotFound, CodePathNotFound, "path_not_found")
 	case errors.Is(err, service.ErrForbidden):
 		Fail(w, http.StatusForbidden, CodePermissionDenied, "permission_denied")
+	case errors.Is(err, service.ErrExists):
+		Fail(w, http.StatusConflict, CodeFileExists, "file_exists")
 	case errors.Is(err, service.ErrNotFile):
 		Fail(w, http.StatusBadRequest, CodeNotAFile, "not_a_file")
 	case errors.Is(err, service.ErrNotDir):
@@ -38,6 +54,29 @@ func failFileErr(w http.ResponseWriter, err error) {
 	default:
 		failInternal(w)
 	}
+}
+
+// audit 记录一条写操作审计日志（结构化 slog）。
+func (h *FileHandler) audit(r *http.Request, action, target, result string) {
+	username := ""
+	if u := middleware.UserFromContext(r.Context()); u != nil {
+		username = u.Username
+	}
+	h.logger.Info("audit",
+		slog.String("action", action),
+		slog.String("path", target),
+		slog.String("user", username),
+		slog.String("result", result),
+		slog.String("request_id", middleware.RequestIDFromContext(r.Context())),
+		slog.String("ip", middleware.ClientIP(r)),
+	)
+}
+
+func auditResult(ok bool) string {
+	if ok {
+		return "ok"
+	}
+	return "fail"
 }
 
 // List 处理 GET /api/fs/list。
@@ -130,6 +169,118 @@ func (h *FileHandler) Download(w http.ResponseWriter, r *http.Request) {
 
 	// ServeContent 自动处理 Range / If-Range / If-None-Match / Last-Modified。
 	http.ServeContent(w, r, name, target.ModTime, target.File)
+}
+
+type pathRequest struct {
+	Path string `json:"path"`
+}
+
+type pathResponse struct {
+	Path string `json:"path"`
+}
+
+// Mkdir 处理 POST /api/fs/mkdir。
+func (h *FileHandler) Mkdir(w http.ResponseWriter, r *http.Request) {
+	var req pathRequest
+	if err := decodeJSON(w, r, &req); err != nil || strings.TrimSpace(req.Path) == "" {
+		failBadRequest(w, "path required")
+		return
+	}
+	resPath, err := h.files.Mkdir(req.Path)
+	if err != nil {
+		h.audit(r, "mkdir", req.Path, "fail")
+		failFileErr(w, err)
+		return
+	}
+	h.audit(r, "mkdir", resPath, "ok")
+	OK(w, pathResponse{Path: resPath})
+}
+
+// Touch 处理 POST /api/fs/touch。
+func (h *FileHandler) Touch(w http.ResponseWriter, r *http.Request) {
+	var req pathRequest
+	if err := decodeJSON(w, r, &req); err != nil || strings.TrimSpace(req.Path) == "" {
+		failBadRequest(w, "path required")
+		return
+	}
+	resPath, err := h.files.Touch(req.Path)
+	if err != nil {
+		h.audit(r, "touch", req.Path, "fail")
+		failFileErr(w, err)
+		return
+	}
+	h.audit(r, "touch", resPath, "ok")
+	OK(w, pathResponse{Path: resPath})
+}
+
+type moveRequest struct {
+	Src []string `json:"src"`
+	Dst string   `json:"dst"`
+}
+
+type opResultsResponse struct {
+	Results []model.OpResult `json:"results"`
+}
+
+// Move 处理 POST /api/fs/move（批量，尽力而为）。
+func (h *FileHandler) Move(w http.ResponseWriter, r *http.Request) {
+	var req moveRequest
+	if err := decodeJSON(w, r, &req); err != nil || len(req.Src) == 0 || strings.TrimSpace(req.Dst) == "" {
+		failBadRequest(w, "src and dst required")
+		return
+	}
+	results := h.files.Move(req.Src, req.Dst)
+	for _, res := range results {
+		h.audit(r, "move", res.Src+" -> "+req.Dst, auditResult(res.OK))
+	}
+	OK(w, opResultsResponse{Results: results})
+}
+
+type deleteRequest struct {
+	Paths []string `json:"paths"`
+}
+
+// Delete 处理 DELETE /api/fs/delete（批量，尽力而为）。
+func (h *FileHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	var req deleteRequest
+	if err := decodeJSON(w, r, &req); err != nil || len(req.Paths) == 0 {
+		failBadRequest(w, "paths required")
+		return
+	}
+	results := h.files.Delete(req.Paths)
+	for _, res := range results {
+		h.audit(r, "delete", res.Src, auditResult(res.OK))
+	}
+	OK(w, opResultsResponse{Results: results})
+}
+
+// Search 处理 GET /api/fs/search。
+func (h *FileHandler) Search(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	base := q.Get("path")
+	if base == "" {
+		base = "/"
+	}
+	query := strings.TrimSpace(q.Get("q"))
+	if query == "" {
+		failBadRequest(w, "q required")
+		return
+	}
+	opts := service.SearchOptions{
+		Recursive:  q.Get("recursive") != "false", // 默认递归
+		ShowHidden: q.Get("show_hidden") == "true",
+		Limit:      atoiDefault(q.Get("limit"), 0),
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), searchTimeout)
+	defer cancel()
+
+	res, err := h.files.Search(ctx, base, query, opts)
+	if err != nil {
+		failFileErr(w, err)
+		return
+	}
+	OK(w, res)
 }
 
 func normalizeSort(s string) string {

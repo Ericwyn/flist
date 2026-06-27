@@ -41,3 +41,35 @@ export interface ListOptions {
   page?: number;
   pageSize?: number;
 }
+
+// 批量写操作（move / delete）的单条结果，对应后端 model.OpResult。
+export interface OpResult {
+  src: string;
+  ok: boolean;
+  error?: string; // 失败时的错误码名
+}
+
+// 单条搜索命中，对应后端 model.SearchHit。
+export interface SearchHit {
+  path: string;
+  name: string;
+  type: EntryType;
+  size: number;
+  mode: string;
+  modTime: string;
+}
+
+// 搜索返回，对应后端 model.SearchResult。
+export interface SearchResult {
+  query: string;
+  base: string;
+  items: SearchHit[];
+  truncated: boolean;
+  timedOut: boolean;
+}
+
+export interface SearchOptions {
+  recursive?: boolean;
+  showHidden?: boolean;
+  limit?: number;
+}

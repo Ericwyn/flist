@@ -37,3 +37,29 @@ type PreviewResult struct {
 	Size         int64  `json:"size"`          // 文件总大小
 	PreviewBytes int    `json:"preview_bytes"` // 预览读取上限
 }
+
+// OpResult 批量写操作（move / delete）的单条结果。
+type OpResult struct {
+	Src   string `json:"src"`             // 操作对象的 API 路径
+	OK    bool   `json:"ok"`              // 是否成功
+	Error string `json:"error,omitempty"` // 失败时的错误码名（如 "file_exists"）
+}
+
+// SearchHit 单条搜索命中。
+type SearchHit struct {
+	Path    string    `json:"path"` // 相对 root 的 API 路径（含文件名）
+	Name    string    `json:"name"`
+	Type    string    `json:"type"` // file | dir
+	Size    int64     `json:"size"`
+	Mode    string    `json:"mode"`
+	ModTime time.Time `json:"mod_time"`
+}
+
+// SearchResult 是搜索接口的返回体。
+type SearchResult struct {
+	Query     string      `json:"query"`
+	Base      string      `json:"base"`      // 搜索起点 API 路径
+	Items     []SearchHit `json:"items"`
+	Truncated bool        `json:"truncated"` // 命中达到上限被截断
+	TimedOut  bool        `json:"timed_out"` // 遍历超时提前结束
+}

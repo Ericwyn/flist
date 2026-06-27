@@ -14,6 +14,8 @@ const (
 	CodePathNotFound       = 2001
 	CodePathTraversal      = 2002
 	CodePermissionDenied   = 2003
+	CodeFileExists         = 2004
+	CodeNameInvalid        = 2006
 	CodeNotAFile           = 2007
 	CodeNotADir            = 2008
 	CodeBadRequest         = 4000

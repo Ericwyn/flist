@@ -1,5 +1,9 @@
 // 统一响应信封，与后端 handler.Envelope 对齐。
-import { FileEntry, ListResult, PreviewResult, ListOptions } from '../types';
+import {
+  FileEntry, ListResult, PreviewResult, ListOptions,
+  OpResult, SearchResult, SearchHit, SearchOptions,
+} from '../types';
+import { parentPath, joinPath } from './path';
 
 export interface Envelope<T = unknown> {
   code: number;
@@ -153,6 +157,65 @@ export const api = {
       if (opts.download) params.set('download', '1');
       return `/api/fs/download?${params.toString()}`;
     },
+
+    // mkdir 创建单层目录，返回规范化后的路径。
+    async mkdir(path: string): Promise<string> {
+      const raw = await request<RawPathResult>('/api/fs/mkdir', {
+        method: 'POST',
+        body: { path },
+      });
+      return raw.path;
+    },
+
+    // touch 创建空文件，返回规范化后的路径。
+    async touch(path: string): Promise<string> {
+      const raw = await request<RawPathResult>('/api/fs/touch', {
+        method: 'POST',
+        body: { path },
+      });
+      return raw.path;
+    },
+
+    // move 批量移动 / 重命名，逐项返回结果（尽力而为）。
+    async move(src: string[], dst: string): Promise<OpResult[]> {
+      const raw = await request<RawOpResults>('/api/fs/move', {
+        method: 'POST',
+        body: { src, dst },
+      });
+      return raw.results || [];
+    },
+
+    // rename 是 move 的便捷封装：把单个条目重命名为同目录下的新名。
+    async rename(fromPath: string, newName: string): Promise<OpResult> {
+      const dst = joinPath(parentPath(fromPath), newName);
+      const results = await this.move([fromPath], dst);
+      return results[0];
+    },
+
+    // remove 批量递归删除，逐项返回结果（尽力而为）。
+    async remove(paths: string[]): Promise<OpResult[]> {
+      const raw = await request<RawOpResults>('/api/fs/delete', {
+        method: 'DELETE',
+        body: { paths },
+      });
+      return raw.results || [];
+    },
+
+    // search 按文件名匹配搜索。
+    async search(base: string, q: string, opts: SearchOptions = {}): Promise<SearchResult> {
+      const params = new URLSearchParams({ path: base || '/', q });
+      if (opts.recursive === false) params.set('recursive', 'false');
+      if (opts.showHidden) params.set('show_hidden', 'true');
+      if (opts.limit) params.set('limit', String(opts.limit));
+      const raw = await request<RawSearchResult>(`/api/fs/search?${params.toString()}`);
+      return {
+        query: raw.query,
+        base: raw.base,
+        items: (raw.items || []).map(mapHit),
+        truncated: raw.truncated,
+        timedOut: raw.timed_out,
+      };
+    },
   },
 };
 
@@ -184,6 +247,31 @@ interface RawPreview {
   preview_bytes: number;
 }
 
+interface RawPathResult {
+  path: string;
+}
+
+interface RawOpResults {
+  results: OpResult[];
+}
+
+interface RawSearchHit {
+  path: string;
+  name: string;
+  type: 'file' | 'dir';
+  size: number;
+  mode: string;
+  mod_time: string;
+}
+
+interface RawSearchResult {
+  query: string;
+  base: string;
+  items: RawSearchHit[];
+  truncated: boolean;
+  timed_out: boolean;
+}
+
 function mapEntry(r: RawEntry): FileEntry {
   return {
     name: r.name,
@@ -194,5 +282,16 @@ function mapEntry(r: RawEntry): FileEntry {
     isSymlink: r.is_symlink,
     symlinkTarget: r.symlink_target,
     unreachable: r.unreachable,
+  };
+}
+
+function mapHit(r: RawSearchHit): SearchHit {
+  return {
+    path: r.path,
+    name: r.name,
+    type: r.type,
+    size: r.size,
+    mode: r.mode,
+    modTime: r.mod_time,
   };
 }

@@ -4,14 +4,18 @@ import { useStore } from '../store';
 import { FileIcon } from './FileIcon';
 import { ContextMenu, MenuItem } from './ContextMenu';
 import { PropertiesModal } from './PropertiesModal';
+import { InputModal } from './InputModal';
+import { ConfirmModal } from './ConfirmModal';
+import { SearchBar } from './SearchBar';
 import { cn } from '../lib/utils';
-import { kindOf, joinPath, breadcrumbs } from '../lib/path';
+import { kindOf, joinPath, breadcrumbs, parentPath } from '../lib/path';
 import { api } from '../lib/api';
-import { FileEntry } from '../types';
+import { FileEntry, SearchHit } from '../types';
 import {
   ArrowLeft, ArrowRight, ArrowUp, RefreshCw, Download, Info,
   Eye, EyeOff, ArrowDownAZ, ArrowUpAZ, LayoutGrid, List as ListIcon,
   Link2, AlertTriangle, Loader2, FolderOpen, ExternalLink,
+  FolderPlus, FilePlus, Pencil, Trash2,
 } from 'lucide-react';
 
 const formatBytes = (bytes: number, decimals = 1) => {
@@ -34,17 +38,28 @@ interface MenuState {
   entry: FileEntry | null; // null 表示空白处右键
 }
 
+// DialogState 描述当前打开的写操作弹窗。
+type DialogState =
+  | { kind: 'mkdir' }
+  | { kind: 'touch' }
+  | { kind: 'rename'; entry: FileEntry }
+  | { kind: 'delete'; entry: FileEntry };
+
 export function FileBrowser() {
   const {
     currentPath, entries, total, loading, error,
     sort, order, showHidden, history, historyIndex, selected,
     navigate, initFromUrl, restore, refresh, goBack, goForward, goUp,
     setSort, toggleOrder, toggleHidden, select, openPreview,
+    mkdir, touch, rename, remove,
+    searchOpen, searchQuery, searching, searchResults, searchTruncated, searchTimedOut, clearSearch,
   } = useFsStore();
   const { viewMode, setViewMode } = useStore();
 
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [propsTarget, setPropsTarget] = useState<{ path: string; entry: FileEntry } | null>(null);
+  // 弹窗状态：新建目录 / 新建文件 / 重命名 / 删除确认。
+  const [dialog, setDialog] = useState<DialogState | null>(null);
 
   // 挂载时按 URL 恢复目录，并监听浏览器物理前进/后退（popstate）。
   useEffect(() => {
@@ -93,6 +108,16 @@ export function FileBrowser() {
     setPropsTarget({ path: joinPath(currentPath, entry.name), entry });
   };
 
+  // openHit 点击搜索结果：目录直接进入，文件进入其所在目录（并清除搜索）。
+  const openHit = (hitPath: string, type: 'file' | 'dir') => {
+    clearSearch();
+    if (type === 'dir') {
+      navigate(hitPath);
+    } else {
+      navigate(parentPath(hitPath));
+    }
+  };
+
   const selectedEntry = entries.find((e) => e.name === selected) || null;
 
   const onItemContextMenu = (e: React.MouseEvent, entry: FileEntry) => {
@@ -112,25 +137,33 @@ export function FileBrowser() {
     if (!menu) return [];
     const entry = menu.entry;
     if (!entry) {
-      // 空白处右键：刷新当前目录。
+      // 空白处右键：新建文件夹 / 新建文件 / 刷新。
       return [
+        { label: '新建文件夹', icon: <FolderPlus className="w-4 h-4" />, onClick: () => setDialog({ kind: 'mkdir' }) },
+        { label: '新建文件', icon: <FilePlus className="w-4 h-4" />, onClick: () => setDialog({ kind: 'touch' }) },
         { label: '刷新', icon: <RefreshCw className="w-4 h-4" />, onClick: refresh },
       ];
     }
     if (entry.unreachable) {
       return [
+        { label: '重命名', icon: <Pencil className="w-4 h-4" />, onClick: () => setDialog({ kind: 'rename', entry }) },
+        { label: '删除', icon: <Trash2 className="w-4 h-4" />, danger: true, onClick: () => setDialog({ kind: 'delete', entry }) },
         { label: '属性', icon: <Info className="w-4 h-4" />, onClick: () => showProps(entry) },
       ];
     }
     if (entry.type === 'dir') {
       return [
         { label: '打开', icon: <FolderOpen className="w-4 h-4" />, onClick: () => openEntry(entry) },
+        { label: '重命名', icon: <Pencil className="w-4 h-4" />, onClick: () => setDialog({ kind: 'rename', entry }) },
+        { label: '删除', icon: <Trash2 className="w-4 h-4" />, danger: true, onClick: () => setDialog({ kind: 'delete', entry }) },
         { label: '属性', icon: <Info className="w-4 h-4" />, onClick: () => showProps(entry) },
       ];
     }
     return [
       { label: '打开预览', icon: <ExternalLink className="w-4 h-4" />, onClick: () => openEntry(entry) },
       { label: '下载', icon: <Download className="w-4 h-4" />, onClick: () => doDownload(entry) },
+      { label: '重命名', icon: <Pencil className="w-4 h-4" />, onClick: () => setDialog({ kind: 'rename', entry }) },
+      { label: '删除', icon: <Trash2 className="w-4 h-4" />, danger: true, onClick: () => setDialog({ kind: 'delete', entry }) },
       { label: '属性', icon: <Info className="w-4 h-4" />, onClick: () => showProps(entry) },
     ];
   };
@@ -181,6 +214,19 @@ export function FileBrowser() {
 
           {/* 操作区 */}
           <div className="flex items-center space-x-1 shrink-0">
+            <SearchBar />
+            <div className="w-px h-4 bg-slate-200 dark:bg-slate-700 mx-1" />
+            <button onClick={() => setDialog({ kind: 'mkdir' })}
+              className="p-1.5 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg"
+              title="新建文件夹">
+              <FolderPlus className="w-4 h-4" />
+            </button>
+            <button onClick={() => setDialog({ kind: 'touch' })}
+              className="p-1.5 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg"
+              title="新建文件">
+              <FilePlus className="w-4 h-4" />
+            </button>
+            <div className="w-px h-4 bg-slate-200 dark:bg-slate-700 mx-1" />
             <button onClick={() => selectedEntry && showProps(selectedEntry)}
               disabled={!selectedEntry}
               className="p-1.5 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg disabled:opacity-30"
@@ -233,7 +279,16 @@ export function FileBrowser() {
       <div className="flex-1 overflow-auto p-4"
         onClick={() => select(null)}
         onContextMenu={onBackgroundContextMenu}>
-        {error ? (
+        {searchOpen ? (
+          <SearchResultsView
+            query={searchQuery}
+            results={searchResults}
+            searching={searching}
+            truncated={searchTruncated}
+            timedOut={searchTimedOut}
+            onOpen={openHit}
+          />
+        ) : error ? (
           <div className="flex flex-col items-center justify-center h-full text-slate-400">
             <AlertTriangle className="w-10 h-10 mb-3 text-amber-500" />
             <p className="text-sm">{error}</p>
@@ -266,6 +321,49 @@ export function FileBrowser() {
           path={propsTarget.path}
           fallback={propsTarget.entry}
           onClose={() => setPropsTarget(null)}
+        />
+      )}
+
+      {dialog?.kind === 'mkdir' && (
+        <InputModal
+          title="新建文件夹"
+          label="文件夹名称"
+          confirmText="创建"
+          onSubmit={(name) => mkdir(name)}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog?.kind === 'touch' && (
+        <InputModal
+          title="新建文件"
+          label="文件名称"
+          confirmText="创建"
+          onSubmit={(name) => touch(name)}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog?.kind === 'rename' && (
+        <InputModal
+          title="重命名"
+          label="新名称"
+          initialValue={dialog.entry.name}
+          confirmText="重命名"
+          onSubmit={(name) => rename(dialog.entry, name)}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog?.kind === 'delete' && (
+        <ConfirmModal
+          title="删除确认"
+          confirmText="删除"
+          message={
+            <span>
+              确定要删除 <span className="font-medium break-all">{dialog.entry.name}</span>
+              {dialog.entry.type === 'dir' ? '（及其全部内容）' : ''} 吗？此操作不可恢复。
+            </span>
+          }
+          onConfirm={() => remove([dialog.entry])}
+          onClose={() => setDialog(null)}
         />
       )}
     </div>
@@ -356,5 +454,60 @@ function ListView({ entries, selected, onSelect, onOpen, onContextMenu }: ViewPr
         ))}
       </tbody>
     </table>
+  );
+}
+
+interface SearchResultsViewProps {
+  query: string;
+  results: SearchHit[];
+  searching: boolean;
+  truncated: boolean;
+  timedOut: boolean;
+  onOpen: (path: string, type: 'file' | 'dir') => void;
+}
+
+// SearchResultsView 以列表形式展示搜索命中，点击进入目标所在目录。
+function SearchResultsView({ query, results, searching, truncated, timedOut, onOpen }: SearchResultsViewProps) {
+  if (searching) {
+    return (
+      <div className="flex items-center justify-center h-full text-slate-400">
+        <Loader2 className="w-6 h-6 animate-spin" />
+      </div>
+    );
+  }
+  if (results.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full text-slate-400 text-sm">
+        <FolderOpen className="w-10 h-10 mb-3 opacity-40" />
+        <p>未找到与「{query}」匹配的文件</p>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col">
+      <div className="text-xs text-slate-400 mb-2 px-1">
+        找到 {results.length} 个匹配「{query}」的结果
+        {truncated && '（已达上限，结果可能不完整）'}
+        {timedOut && '（搜索超时，结果可能不完整）'}
+      </div>
+      <div className="divide-y divide-slate-50 dark:divide-slate-900/50">
+        {results.map((hit) => (
+          <button
+            key={hit.path}
+            onClick={() => onOpen(hit.path, hit.type)}
+            className="w-full flex items-center gap-2.5 py-2 px-2 text-left rounded-lg hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors"
+          >
+            <FileIcon kind={kindOf({ name: hit.name, type: hit.type })} className="w-5 h-5 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="text-sm text-slate-700 dark:text-slate-200 truncate">{hit.name}</div>
+              <div className="text-[11px] text-slate-400 truncate">{hit.path}</div>
+            </div>
+            <span className="text-[11px] text-slate-400 shrink-0 tabular-nums">
+              {hit.type === 'dir' ? '目录' : formatBytes(hit.size)}
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
