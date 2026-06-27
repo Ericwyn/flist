@@ -9,7 +9,11 @@ const (
 	CodeInvalidCredentials = 1002
 	CodeAccountLocked      = 1003
 	CodeWeakPassword       = 1004
+	CodePathNotFound       = 2001
 	CodePathTraversal      = 2002
+	CodePermissionDenied   = 2003
+	CodeNotAFile           = 2007
+	CodeNotADir            = 2008
 	CodeBadRequest         = 4000
 	CodeInternalError      = 9001
 	CodeRateLimited        = 9002

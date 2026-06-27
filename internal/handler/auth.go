@@ -12,8 +12,8 @@ import (
 
 // AuthHandler 处理认证相关接口。
 type AuthHandler struct {
-	auth        *service.AuthService
-	sessionTTL  time.Duration
+	auth         *service.AuthService
+	sessionTTL   time.Duration
 	secureCookie bool // 生产可置 true（HTTPS 下），Phase 0 默认 false 便于本地调试
 }
 

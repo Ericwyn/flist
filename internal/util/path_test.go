@@ -93,14 +93,14 @@ func TestSafeResolve_SymlinkEscape(t *testing.T) {
 
 func TestCleanAPIPath(t *testing.T) {
 	cases := map[string]string{
-		"":               "/",
-		"/":              "/",
-		"docs":           "/docs",
-		"/docs/":         "/docs",
-		"/docs/../a":     "/a",
-		"/../../etc":     "/etc",
-		"//docs//a.txt":  "/docs/a.txt",
-		"/a/./b":         "/a/b",
+		"":              "/",
+		"/":             "/",
+		"docs":          "/docs",
+		"/docs/":        "/docs",
+		"/docs/../a":    "/a",
+		"/../../etc":    "/etc",
+		"//docs//a.txt": "/docs/a.txt",
+		"/a/./b":        "/a/b",
 	}
 	for in, want := range cases {
 		if got := CleanAPIPath(in); got != want {

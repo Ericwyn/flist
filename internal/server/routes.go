@@ -17,6 +17,7 @@ import (
 type Deps struct {
 	Config *config.Config
 	Auth   *service.AuthService
+	Files  *service.FileService
 	Logger *slog.Logger
 }
 
@@ -34,6 +35,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 
 	authHandler := handler.NewAuthHandler(d.Auth, d.Config.SessionTTL)
 	systemHandler := handler.NewSystemHandler()
+	fileHandler := handler.NewFileHandler(d.Files)
 
 	r.Route("/api", func(api chi.Router) {
 		// 公开路由（无需认证）。
@@ -48,6 +50,12 @@ func NewRouter(d Deps) (http.Handler, error) {
 			protected.Post("/auth/logout", authHandler.Logout)
 			protected.Get("/auth/me", authHandler.Me)
 			protected.Put("/auth/password", authHandler.ChangePassword)
+
+			// Phase 1 只读文件接口。
+			protected.Get("/fs/list", fileHandler.List)
+			protected.Get("/fs/stat", fileHandler.Stat)
+			protected.Get("/fs/preview", fileHandler.Preview)
+			protected.Get("/fs/download", fileHandler.Download)
 		})
 
 		// 未匹配的 API 路径返回 404（统一信封）。

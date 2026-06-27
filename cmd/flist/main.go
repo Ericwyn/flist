@@ -45,6 +45,7 @@ func run(logger *slog.Logger) error {
 	defer st.Close()
 
 	authSvc := service.NewAuthService(st, cfg.SessionTTL, logger)
+	fileSvc := service.NewFileService(rootReal)
 
 	created, genPass, err := authSvc.EnsureAdmin(cfg.AdminUser, cfg.AdminPass)
 	if err != nil {
@@ -69,6 +70,7 @@ func run(logger *slog.Logger) error {
 	router, err := server.NewRouter(server.Deps{
 		Config: cfg,
 		Auth:   authSvc,
+		Files:  fileSvc,
 		Logger: logger,
 	})
 	if err != nil {

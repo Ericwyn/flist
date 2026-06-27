@@ -24,8 +24,8 @@ var (
 )
 
 const (
-	bcryptCost      = 10
-	maxPasswordLen  = 72 // bcrypt 截断边界
+	bcryptCost       = 10
+	maxPasswordLen   = 72 // bcrypt 截断边界
 	lockoutThreshold = 5
 	lockoutDuration  = 15 * time.Minute
 )

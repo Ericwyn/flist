@@ -1,4 +1,6 @@
 // 统一响应信封，与后端 handler.Envelope 对齐。
+import { FileEntry, ListResult, PreviewResult, ListOptions } from '../types';
+
 export interface Envelope<T = unknown> {
   code: number;
   message: string;
@@ -99,4 +101,91 @@ export const api = {
       body: { old_password: oldPassword, new_password: newPassword },
     });
   },
+
+  fs: {
+    async list(path: string, opts: ListOptions = {}): Promise<ListResult> {
+      const params = new URLSearchParams({ path: path || '/' });
+      if (opts.sort) params.set('sort', opts.sort);
+      if (opts.order) params.set('order', opts.order);
+      if (opts.showHidden) params.set('show_hidden', 'true');
+      if (opts.page) params.set('page', String(opts.page));
+      if (opts.pageSize) params.set('page_size', String(opts.pageSize));
+      const raw = await request<RawListResult>(`/api/fs/list?${params.toString()}`);
+      return {
+        path: raw.path,
+        total: raw.total,
+        page: raw.page,
+        pageSize: raw.page_size,
+        items: (raw.items || []).map(mapEntry),
+      };
+    },
+
+    async stat(path: string): Promise<FileEntry> {
+      const raw = await request<RawEntry>(
+        `/api/fs/stat?path=${encodeURIComponent(path)}`,
+      );
+      return mapEntry(raw);
+    },
+
+    async preview(path: string): Promise<PreviewResult> {
+      const raw = await request<RawPreview>(
+        `/api/fs/preview?path=${encodeURIComponent(path)}`,
+      );
+      return {
+        type: raw.type,
+        content: raw.content,
+        truncated: raw.truncated,
+        size: raw.size,
+        previewBytes: raw.preview_bytes,
+      };
+    },
+
+    // downloadUrl 构造下载/内联 URL。媒体内联依赖同源 HttpOnly Cookie 鉴权。
+    downloadUrl(path: string, opts: { download?: boolean } = {}): string {
+      const params = new URLSearchParams({ path });
+      if (opts.download) params.set('download', '1');
+      return `/api/fs/download?${params.toString()}`;
+    },
+  },
 };
+
+// 后端原始字段（snake_case）。
+interface RawEntry {
+  name: string;
+  type: 'file' | 'dir';
+  size: number;
+  mode: string;
+  mod_time: string;
+  is_symlink: boolean;
+  symlink_target?: string;
+  unreachable?: boolean;
+}
+
+interface RawListResult {
+  path: string;
+  total: number;
+  page: number;
+  page_size: number;
+  items: RawEntry[];
+}
+
+interface RawPreview {
+  type: 'text' | 'binary' | 'image' | 'video' | 'audio';
+  content: string;
+  truncated: boolean;
+  size: number;
+  preview_bytes: number;
+}
+
+function mapEntry(r: RawEntry): FileEntry {
+  return {
+    name: r.name,
+    type: r.type,
+    size: r.size,
+    mode: r.mode,
+    modTime: r.mod_time,
+    isSymlink: r.is_symlink,
+    symlinkTarget: r.symlink_target,
+    unreachable: r.unreachable,
+  };
+}
