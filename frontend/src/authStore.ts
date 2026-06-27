@@ -10,6 +10,7 @@ interface AuthState {
   init: () => Promise<void>;
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  setUser: (user: MeData) => void;
   clearError: () => void;
 }
 
@@ -58,6 +59,8 @@ export const useAuthStore = create<AuthState>((set) => ({
     clearToken();
     set({ user: null, status: 'unauthenticated' });
   },
+
+  setUser: (user) => set({ user }),
 
   clearError: () => set({ error: null }),
 }));

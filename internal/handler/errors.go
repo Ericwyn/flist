@@ -9,6 +9,8 @@ const (
 	CodeInvalidCredentials = 1002
 	CodeAccountLocked      = 1003
 	CodeWeakPassword       = 1004
+	CodeInvalidUsername    = 1005
+	CodeUsernameTaken      = 1006
 	CodePathNotFound       = 2001
 	CodePathTraversal      = 2002
 	CodePermissionDenied   = 2003

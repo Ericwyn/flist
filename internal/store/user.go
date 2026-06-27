@@ -55,6 +55,33 @@ func (s *Store) UpdatePassword(userID int64, passwordHash string) error {
 	return err
 }
 
+// ErrUsernameTaken 表示目标用户名已被其他用户占用。
+var ErrUsernameTaken = errors.New("username taken")
+
+// UpdateUsername 更新用户名。若新用户名已被其他用户占用，返回 ErrUsernameTaken。
+// 写连接为单连接（SetMaxOpenConns(1)），预查重与更新串行执行，无并发竞态。
+func (s *Store) UpdateUsername(userID int64, username string) error {
+	var existingID int64
+	err := s.db.QueryRow(`SELECT id FROM users WHERE username = ?`, username).Scan(&existingID)
+	switch {
+	case err == nil:
+		if existingID != userID {
+			return ErrUsernameTaken
+		}
+		// 用户名未变（指向自己），直接刷新 updated_at。
+	case errors.Is(err, sql.ErrNoRows):
+		// 无冲突，继续。
+	default:
+		return err
+	}
+
+	_, err = s.db.Exec(
+		`UPDATE users SET username = ?, updated_at = ? WHERE id = ?`,
+		username, time.Now().UTC(), userID,
+	)
+	return err
+}
+
 func (s *Store) scanUser(row *sql.Row) (*model.User, error) {
 	var u model.User
 	err := row.Scan(&u.ID, &u.Username, &u.Password, &u.CreatedAt, &u.UpdatedAt)

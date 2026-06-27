@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -31,13 +32,6 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	// 启动时标准化并校验 root（必须已存在的目录）。
-	rootReal, err := util.ResolveRoot(cfg.Root)
-	if err != nil {
-		return err
-	}
-	logger.Info("root resolved", slog.String("root", rootReal))
-
 	st, err := store.Open(cfg.Data)
 	if err != nil {
 		return err
@@ -45,21 +39,38 @@ func run(logger *slog.Logger) error {
 	defer st.Close()
 
 	authSvc := service.NewAuthService(st, cfg.SessionTTL, logger)
+
+	// --reset-admin：重置管理员凭据为 admin + 随机密码后退出，不启动服务。
+	if cfg.ResetAdmin {
+		genPass, err := authSvc.ResetAdmin("admin", "")
+		if err != nil {
+			return fmt.Errorf("reset admin failed: %w", err)
+		}
+		logger.Info("admin credentials reset; login and change it in settings",
+			slog.String("username", "admin"),
+			slog.String("password", genPass),
+		)
+		return nil
+	}
+
+	// 启动时标准化并校验 root（必须已存在的目录）。
+	rootReal, err := util.ResolveRoot(cfg.Root)
+	if err != nil {
+		return err
+	}
+	logger.Info("root resolved", slog.String("root", rootReal))
+
 	fileSvc := service.NewFileService(rootReal)
 
-	created, genPass, err := authSvc.EnsureAdmin(cfg.AdminUser, cfg.AdminPass)
+	created, genPass, err := authSvc.EnsureAdmin("admin", "")
 	if err != nil {
 		return err
 	}
 	if created {
-		if genPass != "" {
-			logger.Warn("initial admin created with generated password; change it after first login",
-				slog.String("username", cfg.AdminUser),
-				slog.String("password", genPass),
-			)
-		} else {
-			logger.Info("initial admin created", slog.String("username", cfg.AdminUser))
-		}
+		logger.Warn("initial admin created with generated password; change it after first login",
+			slog.String("username", "admin"),
+			slog.String("password", genPass),
+		)
 	}
 
 	// 后台定时清理过期会话。

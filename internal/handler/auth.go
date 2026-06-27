@@ -147,3 +147,43 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	OK(w, nil)
 }
+
+type changeUsernameRequest struct {
+	Username string `json:"username"`
+}
+
+// ChangeUsername 处理 PUT /api/auth/username。
+func (h *AuthHandler) ChangeUsername(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserFromContext(r.Context())
+	if user == nil {
+		failUnauthorized(w)
+		return
+	}
+	var req changeUsernameRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		failBadRequest(w, "bad_request")
+		return
+	}
+	req.Username = strings.TrimSpace(req.Username)
+	if req.Username == "" {
+		failBadRequest(w, "username required")
+		return
+	}
+
+	updated, err := h.auth.ChangeUsername(user.ID, req.Username)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrInvalidUsername):
+			Fail(w, http.StatusBadRequest, CodeInvalidUsername, "invalid_username")
+		case errors.Is(err, service.ErrUsernameTaken):
+			Fail(w, http.StatusConflict, CodeUsernameTaken, "username_taken")
+		default:
+			failInternal(w)
+		}
+		return
+	}
+	OK(w, map[string]any{
+		"id":       updated.ID,
+		"username": updated.Username,
+	})
+}

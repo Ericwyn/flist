@@ -191,3 +191,149 @@ func TestChangePassword_WeakNew(t *testing.T) {
 		}
 	}
 }
+
+func TestChangeUsername_Success(t *testing.T) {
+	a, _ := newAuthService(t)
+	a.EnsureAdmin("admin", "secret12")
+	res, _ := a.Login("admin", "secret12", "1.1.1.1")
+
+	updated, err := a.ChangeUsername(res.User.ID, "newname")
+	if err != nil {
+		t.Fatalf("change username failed: %v", err)
+	}
+	if updated.Username != "newname" {
+		t.Errorf("expected username newname, got %q", updated.Username)
+	}
+
+	// 旧用户名登录失败，新用户名可登录。
+	if _, err := a.Login("admin", "secret12", "2.2.2.2"); err != ErrInvalidCredentials {
+		t.Errorf("old username should fail, got %v", err)
+	}
+	if _, err := a.Login("newname", "secret12", "2.2.2.2"); err != nil {
+		t.Errorf("new username should work: %v", err)
+	}
+}
+
+func TestChangeUsername_Invalid(t *testing.T) {
+	a, _ := newAuthService(t)
+	a.EnsureAdmin("admin", "secret12")
+	res, _ := a.Login("admin", "secret12", "1.1.1.1")
+
+	cases := []string{"ab", "_leading", "-leading", "bad name", "bad@name", "日本語", "thisusernameiswaytoolongtobevalid123"}
+	for _, name := range cases {
+		if _, err := a.ChangeUsername(res.User.ID, name); err != ErrInvalidUsername {
+			t.Errorf("username %q: expected ErrInvalidUsername, got %v", name, err)
+		}
+	}
+}
+
+func TestChangeUsername_Taken(t *testing.T) {
+	a, st := newAuthService(t)
+	a.EnsureAdmin("admin", "secret12")
+	// 直接创建第二个用户占用目标用户名。
+	if _, err := st.CreateUser("bob", "x"); err != nil {
+		t.Fatal(err)
+	}
+	res, _ := a.Login("admin", "secret12", "1.1.1.1")
+
+	if _, err := a.ChangeUsername(res.User.ID, "bob"); err != ErrUsernameTaken {
+		t.Errorf("expected ErrUsernameTaken, got %v", err)
+	}
+}
+
+func TestChangeUsername_SameName(t *testing.T) {
+	a, _ := newAuthService(t)
+	a.EnsureAdmin("admin", "secret12")
+	res, _ := a.Login("admin", "secret12", "1.1.1.1")
+
+	// 改成与当前相同的用户名应成功（幂等）。
+	if _, err := a.ChangeUsername(res.User.ID, "admin"); err != nil {
+		t.Errorf("changing to same username should succeed, got %v", err)
+	}
+}
+
+func TestResetAdmin_WithExplicitPassword(t *testing.T) {
+	a, _ := newAuthService(t)
+	a.EnsureAdmin("admin", "secret12")
+
+	// 先创建一个会话，重置后应被吊销。
+	res, _ := a.Login("admin", "secret12", "1.1.1.1")
+	_, _, _ = a.Validate(res.Token)
+
+	genPass, err := a.ResetAdmin("rootadmin", "newpass99")
+	if err != nil {
+		t.Fatalf("reset admin failed: %v", err)
+	}
+	if genPass != "" {
+		t.Errorf("expected empty genPass for explicit password, got %q", genPass)
+	}
+
+	// 旧凭据失效。
+	if _, err := a.Login("admin", "secret12", "2.2.2.2"); err != ErrInvalidCredentials {
+		t.Errorf("old credentials should fail, got %v", err)
+	}
+	// 新凭据可用。
+	if _, err := a.Login("rootadmin", "newpass99", "2.2.2.2"); err != nil {
+		t.Errorf("new credentials should work: %v", err)
+	}
+	// 旧会话已失效。
+	if _, _, err := a.Validate(res.Token); err != ErrUnauthorized {
+		t.Errorf("old session should be revoked, got %v", err)
+	}
+}
+
+func TestResetAdmin_GeneratesPassword(t *testing.T) {
+	a, _ := newAuthService(t)
+	a.EnsureAdmin("admin", "secret12")
+
+	genPass, err := a.ResetAdmin("admin", "")
+	if err != nil {
+		t.Fatalf("reset admin failed: %v", err)
+	}
+	if genPass == "" {
+		t.Fatal("expected generated password")
+	}
+	// 生成的密码应能登录。
+	if _, err := a.Login("admin", genPass, "1.1.1.1"); err != nil {
+		t.Errorf("login with generated password failed: %v", err)
+	}
+}
+
+func TestResetAdmin_NoUser(t *testing.T) {
+	a, _ := newAuthService(t)
+	// 未创建任何用户，id=1 不存在。
+	if _, err := a.ResetAdmin("admin", "newpass99"); err != ErrUserNotFound {
+		t.Errorf("expected ErrUserNotFound, got %v", err)
+	}
+}
+
+func TestResetAdmin_InvalidUsername(t *testing.T) {
+	a, _ := newAuthService(t)
+	a.EnsureAdmin("admin", "secret12")
+
+	if _, err := a.ResetAdmin("ab", "newpass99"); err != ErrInvalidUsername {
+		t.Errorf("expected ErrInvalidUsername, got %v", err)
+	}
+}
+
+func TestResetAdmin_WeakPassword(t *testing.T) {
+	a, _ := newAuthService(t)
+	a.EnsureAdmin("admin", "secret12")
+
+	if _, err := a.ResetAdmin("admin", "short1"); err != ErrWeakPassword {
+		t.Errorf("expected ErrWeakPassword, got %v", err)
+	}
+}
+
+func TestResetAdmin_UsernameTaken(t *testing.T) {
+	a, st := newAuthService(t)
+	a.EnsureAdmin("admin", "secret12")
+	// 创建第二个用户占用目标用户名。
+	if _, err := st.CreateUser("bob", "x"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := a.ResetAdmin("bob", "newpass99"); err != ErrUsernameTaken {
+		t.Errorf("expected ErrUsernameTaken, got %v", err)
+	}
+}

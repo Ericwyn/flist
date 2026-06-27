@@ -50,6 +50,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 			protected.Post("/auth/logout", authHandler.Logout)
 			protected.Get("/auth/me", authHandler.Me)
 			protected.Put("/auth/password", authHandler.ChangePassword)
+			protected.Put("/auth/username", authHandler.ChangeUsername)
 
 			// Phase 1 只读文件接口。
 			protected.Get("/fs/list", fileHandler.List)

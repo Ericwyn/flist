@@ -33,7 +33,6 @@ func TestLoad_Defaults(t *testing.T) {
 	t.Setenv("FLIST_ROOT", "")
 	t.Setenv("FLIST_ADDR", "")
 	t.Setenv("FLIST_DATA", "")
-	t.Setenv("FLIST_ADMIN_USER", "")
 	t.Setenv("FLIST_SESSION_TTL", "")
 
 	cfg, err := Load([]string{"--root", "/some/root"})
@@ -45,9 +44,6 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.Data != "./data" {
 		t.Errorf("default data: got %q", cfg.Data)
-	}
-	if cfg.AdminUser != "admin" {
-		t.Errorf("default admin user: got %q", cfg.AdminUser)
 	}
 	if cfg.SessionTTL != 24*time.Hour {
 		t.Errorf("default ttl: got %v", cfg.SessionTTL)
@@ -71,5 +67,16 @@ func TestLoad_InvalidSessionTTL(t *testing.T) {
 	t.Setenv("FLIST_SESSION_TTL", "notaduration")
 	if _, err := Load([]string{}); err == nil {
 		t.Fatal("expected error for invalid TTL")
+	}
+}
+
+func TestLoad_ResetAdminSkipsRoot(t *testing.T) {
+	t.Setenv("FLIST_ROOT", "")
+	cfg, err := Load([]string{"--reset-admin"})
+	if err != nil {
+		t.Fatalf("--reset-admin should not require --root: %v", err)
+	}
+	if !cfg.ResetAdmin {
+		t.Error("expected ResetAdmin=true")
 	}
 }

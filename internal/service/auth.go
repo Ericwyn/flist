@@ -21,6 +21,9 @@ var (
 	ErrWeakPassword       = errors.New("weak password")
 	ErrUnauthorized       = errors.New("unauthorized")
 	ErrPasswordTooLong    = errors.New("password too long")
+	ErrInvalidUsername    = errors.New("invalid username")
+	ErrUsernameTaken      = errors.New("username taken")
+	ErrUserNotFound       = errors.New("user not found")
 )
 
 const (
@@ -186,9 +189,96 @@ func (a *AuthService) ChangePassword(userID int64, keepSessionID, oldPassword, n
 	return a.store.DeleteUserSessionsExcept(userID, keepSessionID)
 }
 
+// ChangeUsername 修改当前用户的用户名。会话本身已证明身份，故无需再次校验密码。
+// 新用户名需通过格式校验且未被其他用户占用。返回更新后的用户对象。
+func (a *AuthService) ChangeUsername(userID int64, newUsername string) (*model.User, error) {
+	if err := validateUsername(newUsername); err != nil {
+		return nil, err
+	}
+	if err := a.store.UpdateUsername(userID, newUsername); err != nil {
+		if errors.Is(err, store.ErrUsernameTaken) {
+			return nil, ErrUsernameTaken
+		}
+		return nil, err
+	}
+	return a.store.GetUserByID(userID)
+}
+
 // CleanupExpiredSessions 清理过期会话，供后台定时任务调用。
 func (a *AuthService) CleanupExpiredSessions() (int64, error) {
 	return a.store.DeleteExpiredSessions(time.Now())
+}
+
+// ResetAdmin 重置管理员（id=1）的用户名和密码，并吊销所有已签发会话。
+// username 为新用户名；password 为空时随机生成并返回明文，否则返回空字符串。
+func (a *AuthService) ResetAdmin(username, password string) (string, error) {
+	user, err := a.store.GetUserByID(1)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return "", ErrUserNotFound
+		}
+		return "", err
+	}
+
+	if err := validateUsername(username); err != nil {
+		return "", err
+	}
+
+	generatedPass := ""
+	if password == "" {
+		password, err = util.RandomPassword()
+		if err != nil {
+			return "", err
+		}
+		generatedPass = password
+	}
+
+	if err := validatePasswordStrength(password); err != nil {
+		return "", err
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcryptCost)
+	if err != nil {
+		return "", err
+	}
+
+	if err := a.store.UpdateUsername(user.ID, username); err != nil {
+		if errors.Is(err, store.ErrUsernameTaken) {
+			return "", ErrUsernameTaken
+		}
+		return "", err
+	}
+	if err := a.store.UpdatePassword(user.ID, string(hash)); err != nil {
+		return "", err
+	}
+	// 吊销该用户全部会话（keepID 传空）。
+	if err := a.store.DeleteUserSessionsExcept(user.ID, ""); err != nil {
+		return "", err
+	}
+
+	return generatedPass, nil
+}
+
+const (
+	usernameMinLen = 3
+	usernameMaxLen = 32
+)
+
+// validateUsername 校验用户名：长度 3-32，仅允许字母、数字、下划线、连字符，且首字符为字母或数字。
+func validateUsername(name string) error {
+	if len(name) < usernameMinLen || len(name) > usernameMaxLen {
+		return ErrInvalidUsername
+	}
+	for i, r := range name {
+		switch {
+		case unicode.IsLetter(r) && r < unicode.MaxASCII:
+		case unicode.IsDigit(r):
+		case (r == '_' || r == '-') && i > 0:
+		default:
+			return ErrInvalidUsername
+		}
+	}
+	return nil
 }
 
 // validatePasswordStrength 校验新密码强度：≥8 位且同时含字母与数字，且不超过 bcrypt 上限。

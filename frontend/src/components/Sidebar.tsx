@@ -1,14 +1,14 @@
-import React from 'react';
-import { HardDrive, Moon, Sun, Home, LogOut } from 'lucide-react';
-import { useStore } from '../store';
+import React, { useState } from 'react';
+import { HardDrive, Home, Settings } from 'lucide-react';
 import { useFsStore } from '../fsStore';
 import { useAuthStore } from '../authStore';
 import { cn } from '../lib/utils';
+import { SettingsModal } from './SettingsModal';
 
 export function Sidebar() {
-  const { theme, toggleTheme } = useStore();
   const { currentPath, navigate } = useFsStore();
-  const { user, logout } = useAuthStore();
+  const { user } = useAuthStore();
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const atRoot = currentPath === '/';
 
@@ -43,54 +43,23 @@ export function Sidebar() {
         {/* 收藏夹（Phase 3）与最近访问、磁盘用量（Phase 6）将在后续阶段接入。 */}
       </div>
 
-      <div className="px-4 py-3 border-t border-slate-200 dark:border-slate-800 flex flex-col space-y-3">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center min-w-0 gap-2">
-            <div className="w-6 h-6 rounded-full bg-blue-100 dark:bg-blue-900/40 flex items-center justify-center text-[11px] font-semibold text-blue-700 dark:text-blue-300 shrink-0">
-              {(user?.username ?? '?').slice(0, 1).toUpperCase()}
-            </div>
-            <span className="text-xs text-slate-600 dark:text-slate-300 truncate" title={user?.username}>
-              {user?.username ?? '未登录'}
-            </span>
+      <div className="px-3 py-3 border-t border-slate-200 dark:border-slate-800">
+        <button
+          onClick={() => setSettingsOpen(true)}
+          className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-800 transition-colors group"
+          title="设置"
+        >
+          <div className="w-6 h-6 rounded-full bg-blue-100 dark:bg-blue-900/40 flex items-center justify-center text-[11px] font-semibold text-blue-700 dark:text-blue-300 shrink-0">
+            {(user?.username ?? '?').slice(0, 1).toUpperCase()}
           </div>
-          <button
-            onClick={() => logout()}
-            className="p-1.5 text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded-lg transition-colors shrink-0"
-            title="登出"
-          >
-            <LogOut className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="flex justify-center">
-          <div className="bg-slate-200/70 dark:bg-slate-800 p-0.5 rounded-full flex items-center w-[84px] relative">
-            <div
-              className={cn(
-                'absolute left-0.5 top-0.5 bottom-0.5 w-[calc(50%-2px)] bg-white dark:bg-slate-700 rounded-full shadow-sm transition-transform duration-300 ease-in-out',
-                theme === 'dark' ? 'translate-x-full' : 'translate-x-0',
-              )}
-            />
-            <button
-              onClick={() => theme === 'dark' && toggleTheme()}
-              className={cn(
-                'flex-1 flex justify-center py-1 z-10 transition-colors',
-                theme === 'light' ? 'text-amber-500' : 'text-slate-400 hover:text-slate-300',
-              )}
-            >
-              <Sun className="w-3.5 h-3.5" />
-            </button>
-            <button
-              onClick={() => theme === 'light' && toggleTheme()}
-              className={cn(
-                'flex-1 flex justify-center py-1 z-10 transition-colors',
-                theme === 'dark' ? 'text-blue-400' : 'text-slate-400 hover:text-slate-500',
-              )}
-            >
-              <Moon className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
+          <span className="flex-1 min-w-0 text-sm text-left truncate" title={user?.username}>
+            {user?.username ?? '未登录'}
+          </span>
+          <Settings className="w-4 h-4 text-slate-400 group-hover:text-slate-600 dark:group-hover:text-slate-200 shrink-0 transition-colors" />
+        </button>
       </div>
+
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }

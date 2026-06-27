@@ -24,11 +24,32 @@ func HashToken(token string) string {
 }
 
 // RandomPassword 生成一个随机初始密码（用于未配置管理员密码时）。
-// 返回的是 Base64URL 编码的随机串，长度足够且含字母数字。
+// 保证同时包含字母和数字，满足 validatePasswordStrength 校验。
 func RandomPassword() (string, error) {
-	buf := make([]byte, 12)
+	for i := 0; i < 10; i++ {
+		buf := make([]byte, 12)
+		if _, err := rand.Read(buf); err != nil {
+			return "", err
+		}
+		s := base64.RawURLEncoding.EncodeToString(buf)
+		var hasLetter, hasDigit bool
+		for _, r := range s {
+			switch {
+			case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z'):
+				hasLetter = true
+			case r >= '0' && r <= '9':
+				hasDigit = true
+			}
+		}
+		if hasLetter && hasDigit {
+			return s, nil
+		}
+	}
+	// 极端情况下兜底：拼一个确定满足条件的。
+	buf := make([]byte, 10)
 	if _, err := rand.Read(buf); err != nil {
 		return "", err
 	}
-	return base64.RawURLEncoding.EncodeToString(buf), nil
+	s := base64.RawURLEncoding.EncodeToString(buf)
+	return "a1" + s, nil
 }

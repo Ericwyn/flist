@@ -36,7 +36,7 @@ build-all: build-linux build-windows
 
 ## 仅后端开发运行（使用仓库已提交的前端产物）
 run:
-	go run $(CMD) --root ./testroot --admin-pass test1234
+	go run $(CMD) --root ./testroot
 
 test:
 	go test ./...

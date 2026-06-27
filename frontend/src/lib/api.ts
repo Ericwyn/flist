@@ -102,6 +102,13 @@ export const api = {
     });
   },
 
+  changeUsername(username: string): Promise<MeData> {
+    return request<MeData>('/api/auth/username', {
+      method: 'PUT',
+      body: { username },
+    });
+  },
+
   fs: {
     async list(path: string, opts: ListOptions = {}): Promise<ListResult> {
       const params = new URLSearchParams({ path: path || '/' });
