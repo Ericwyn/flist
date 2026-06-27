@@ -33,6 +33,7 @@ func New(rootReal string) *Local {
 var (
 	_ storage.Backend = (*Local)(nil)
 	_ storage.Walker  = (*Local)(nil)
+	_ storage.Usager  = (*Local)(nil)
 )
 
 func (b *Local) Name() string { return "local" }
@@ -271,6 +272,15 @@ func (b *Local) Copy(_ context.Context, src, dst string) error {
 		return mapErr(err)
 	}
 	return nil
+}
+
+// Usage 返回 p 所在文件系统的总容量与可用字节数（storage.Usager）。
+func (b *Local) Usage(_ context.Context, p string) (total, free uint64, err error) {
+	local, _, rerr := b.resolve(p)
+	if rerr != nil {
+		return 0, 0, rerr
+	}
+	return util.Usage(local)
 }
 
 // Walk 串行 WalkDir 遍历（NAS 多机械盘，并行遍历加剧寻道抖动）。

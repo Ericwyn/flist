@@ -15,9 +15,12 @@ const (
 	CodePathTraversal      = 2002
 	CodePermissionDenied   = 2003
 	CodeFileExists         = 2004
+	CodeDiskFull           = 2005
 	CodeNameInvalid        = 2006
 	CodeNotAFile           = 2007
 	CodeNotADir            = 2008
+	CodeBookmarkExists     = 3001
+	CodeBookmarkNotFound   = 3002
 	CodeBadRequest         = 4000
 	CodeInternalError      = 9001
 	CodeRateLimited        = 9002

@@ -30,6 +30,7 @@ type Mux struct {
 
 var _ Backend = (*Mux)(nil)
 var _ Walker = (*Mux)(nil)
+var _ Usager = (*Mux)(nil)
 
 // NewMux 构造组合驱动。mounts 顺序决定虚拟根列表的展示顺序。
 func NewMux(mounts []Mount) *Mux {
@@ -211,6 +212,23 @@ func (m *Mux) Copy(ctx context.Context, src, dst string) error {
 		return ErrNotSupported
 	}
 	return sb.Copy(ctx, sRel, dRel)
+}
+
+// Usage 路由到命中挂载点并委托其 Usage（storage.Usager）。
+// 虚拟根 / 挂载点后端未实现 Usager 时返回 ErrNotSupported。
+func (m *Mux) Usage(ctx context.Context, p string) (total, free uint64, err error) {
+	_, b, rel, rerr := m.route(p)
+	if rerr != nil {
+		return 0, 0, rerr
+	}
+	if b == nil {
+		return 0, 0, ErrNotSupported // 虚拟根无单一存储用量
+	}
+	u, ok := b.(Usager)
+	if !ok {
+		return 0, 0, ErrNotSupported
+	}
+	return u.Usage(ctx, rel)
 }
 
 // Walk 在虚拟根时遍历所有挂载点（relPath 以挂载点名为前缀）；在挂载点子树时

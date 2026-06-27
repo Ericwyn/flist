@@ -71,7 +71,7 @@ func TestMove_Rename(t *testing.T) {
 	svc, root := setupTestRoot(t)
 	writeFile(t, root, "old.txt", "content")
 
-	results := svc.Move(context.Background(), []string{"/old.txt"}, "/new.txt")
+	results := svc.Move(context.Background(), []string{"/old.txt"}, "/new.txt", false)
 	if len(results) != 1 || !results[0].OK {
 		t.Fatalf("rename failed: %+v", results)
 	}
@@ -89,7 +89,7 @@ func TestMove_IntoDir(t *testing.T) {
 	writeFile(t, root, "b.txt", "b")
 	os.MkdirAll(filepath.Join(root, "dest"), 0o755)
 
-	results := svc.Move(context.Background(), []string{"/a.txt", "/b.txt"}, "/dest")
+	results := svc.Move(context.Background(), []string{"/a.txt", "/b.txt"}, "/dest", false)
 	if len(results) != 2 || !results[0].OK || !results[1].OK {
 		t.Fatalf("move into dir failed: %+v", results)
 	}
@@ -106,7 +106,7 @@ func TestMove_Conflict(t *testing.T) {
 	writeFile(t, root, "src.txt", "s")
 	writeFile(t, root, "exists.txt", "e")
 
-	results := svc.Move(context.Background(), []string{"/src.txt"}, "/exists.txt")
+	results := svc.Move(context.Background(), []string{"/src.txt"}, "/exists.txt", false)
 	if results[0].OK || results[0].Error != "file_exists" {
 		t.Errorf("expected file_exists conflict, got %+v", results[0])
 	}
@@ -114,7 +114,7 @@ func TestMove_Conflict(t *testing.T) {
 
 func TestMove_SrcNotFound(t *testing.T) {
 	svc, _ := setupTestRoot(t)
-	results := svc.Move(context.Background(), []string{"/ghost.txt"}, "/new.txt")
+	results := svc.Move(context.Background(), []string{"/ghost.txt"}, "/new.txt", false)
 	if results[0].OK || results[0].Error != "path_not_found" {
 		t.Errorf("expected path_not_found, got %+v", results[0])
 	}
@@ -125,7 +125,7 @@ func TestMove_DirIntoOwnSubtree(t *testing.T) {
 	os.MkdirAll(filepath.Join(root, "parent", "child"), 0o755)
 
 	// 把 /parent 移动进 /parent/child → 自包含，应被拒。
-	results := svc.Move(context.Background(), []string{"/parent"}, "/parent/child")
+	results := svc.Move(context.Background(), []string{"/parent"}, "/parent/child", false)
 	if results[0].OK || results[0].Error != "bad_request" {
 		t.Errorf("expected bad_request for self-subtree move, got %+v", results[0])
 	}
@@ -137,7 +137,7 @@ func TestMove_MultiToNonexistent(t *testing.T) {
 	writeFile(t, root, "b.txt", "b")
 
 	// dst 不存在且多个 src → 每项 not_a_dir。
-	results := svc.Move(context.Background(), []string{"/a.txt", "/b.txt"}, "/nowhere")
+	results := svc.Move(context.Background(), []string{"/a.txt", "/b.txt"}, "/nowhere", false)
 	for _, res := range results {
 		if res.OK || res.Error != "not_a_dir" {
 			t.Errorf("expected not_a_dir, got %+v", res)

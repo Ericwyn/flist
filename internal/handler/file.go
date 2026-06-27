@@ -47,6 +47,8 @@ func failFileErr(w http.ResponseWriter, err error) {
 		Fail(w, http.StatusForbidden, CodePermissionDenied, "permission_denied")
 	case errors.Is(err, storage.ErrExists):
 		Fail(w, http.StatusConflict, CodeFileExists, "file_exists")
+	case errors.Is(err, storage.ErrDiskFull):
+		Fail(w, http.StatusInsufficientStorage, CodeDiskFull, "disk_full")
 	case errors.Is(err, storage.ErrNotFile):
 		Fail(w, http.StatusBadRequest, CodeNotAFile, "not_a_file")
 	case errors.Is(err, storage.ErrNotDir):
@@ -222,8 +224,9 @@ func (h *FileHandler) Touch(w http.ResponseWriter, r *http.Request) {
 }
 
 type moveRequest struct {
-	Src []string `json:"src"`
-	Dst string   `json:"dst"`
+	Src        []string `json:"src"`
+	Dst        string   `json:"dst"`
+	AutoRename bool     `json:"auto_rename"`
 }
 
 type opResultsResponse struct {
@@ -237,9 +240,29 @@ func (h *FileHandler) Move(w http.ResponseWriter, r *http.Request) {
 		failBadRequest(w, "src and dst required")
 		return
 	}
-	results := h.files.Move(r.Context(), req.Src, req.Dst)
+	results := h.files.Move(r.Context(), req.Src, req.Dst, req.AutoRename)
 	for _, res := range results {
 		h.audit(r, "move", res.Src+" -> "+req.Dst, auditResult(res.OK))
+	}
+	OK(w, opResultsResponse{Results: results})
+}
+
+type copyRequest struct {
+	Src        []string `json:"src"`
+	Dst        string   `json:"dst"`
+	AutoRename bool     `json:"auto_rename"`
+}
+
+// Copy 处理 POST /api/fs/copy（批量，尽力而为）。
+func (h *FileHandler) Copy(w http.ResponseWriter, r *http.Request) {
+	var req copyRequest
+	if err := decodeJSON(w, r, &req); err != nil || len(req.Src) == 0 || strings.TrimSpace(req.Dst) == "" {
+		failBadRequest(w, "src and dst required")
+		return
+	}
+	results := h.files.Copy(r.Context(), req.Src, req.Dst, req.AutoRename)
+	for _, res := range results {
+		h.audit(r, "copy", res.Src+" -> "+req.Dst, auditResult(res.OK))
 	}
 	OK(w, opResultsResponse{Results: results})
 }

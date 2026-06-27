@@ -1,7 +1,7 @@
 // 统一响应信封，与后端 handler.Envelope 对齐。
 import {
   FileEntry, ListResult, PreviewResult, ListOptions,
-  OpResult, SearchResult, SearchHit, SearchOptions,
+  OpResult, SearchResult, SearchHit, SearchOptions, Bookmark,
 } from '../types';
 import { parentPath, joinPath } from './path';
 
@@ -177,15 +177,25 @@ export const api = {
     },
 
     // move 批量移动 / 重命名，逐项返回结果（尽力而为）。
-    async move(src: string[], dst: string): Promise<OpResult[]> {
+    // autoRename：仅「移入已存在目录」分支生效，落点同名时后端自动避让。
+    async move(src: string[], dst: string, autoRename = false): Promise<OpResult[]> {
       const raw = await request<RawOpResults>('/api/fs/move', {
         method: 'POST',
-        body: { src, dst },
+        body: { src, dst, auto_rename: autoRename },
       });
       return raw.results || [];
     },
 
-    // rename 是 move 的便捷封装：把单个条目重命名为同目录下的新名。
+    // copy 批量复制，逐项返回结果（尽力而为）。autoRename 同 move。
+    async copy(src: string[], dst: string, autoRename = false): Promise<OpResult[]> {
+      const raw = await request<RawOpResults>('/api/fs/copy', {
+        method: 'POST',
+        body: { src, dst, auto_rename: autoRename },
+      });
+      return raw.results || [];
+    },
+
+    // rename 是 move 的便捷封装：把单个条目重命名为同目录下的新名（严格冲突，不避让）。
     async rename(fromPath: string, newName: string): Promise<OpResult> {
       const dst = joinPath(parentPath(fromPath), newName);
       const results = await this.move([fromPath], dst);
@@ -215,6 +225,44 @@ export const api = {
         truncated: raw.truncated,
         timedOut: raw.timed_out,
       };
+    },
+  },
+
+  bookmarks: {
+    // list 获取当前用户的收藏列表（含 valid 失效标记）。
+    async list(): Promise<Bookmark[]> {
+      const raw = await request<{ bookmarks: RawBookmark[] }>('/api/bookmarks');
+      return (raw.bookmarks || []).map(mapBookmark);
+    },
+
+    // create 收藏一个目录。name 可省略（后端回落为 basename）。
+    async create(path: string, name?: string): Promise<Bookmark> {
+      const raw = await request<RawBookmark>('/api/bookmarks', {
+        method: 'POST',
+        body: { path, name: name ?? '' },
+      });
+      return mapBookmark(raw);
+    },
+
+    // update 重命名收藏。
+    async update(id: number, name: string): Promise<void> {
+      await request<null>(`/api/bookmarks/${id}`, {
+        method: 'PUT',
+        body: { name },
+      });
+    },
+
+    // remove 删除收藏。
+    async remove(id: number): Promise<void> {
+      await request<null>(`/api/bookmarks/${id}`, { method: 'DELETE' });
+    },
+
+    // reorder 批量调整排序。
+    async reorder(orders: { id: number; sortOrder: number }[]): Promise<void> {
+      await request<null>('/api/bookmarks/reorder', {
+        method: 'PUT',
+        body: { orders: orders.map((o) => ({ id: o.id, sort_order: o.sortOrder })) },
+      });
     },
   },
 };
@@ -293,5 +341,25 @@ function mapHit(r: RawSearchHit): SearchHit {
     size: r.size,
     mode: r.mode,
     modTime: r.mod_time,
+  };
+}
+
+interface RawBookmark {
+  id: number;
+  name: string;
+  path: string;
+  sort_order: number;
+  created_at: string;
+  valid: boolean;
+}
+
+function mapBookmark(r: RawBookmark): Bookmark {
+  return {
+    id: r.id,
+    name: r.name,
+    path: r.path,
+    sortOrder: r.sort_order,
+    createdAt: r.created_at,
+    valid: r.valid,
   };
 }

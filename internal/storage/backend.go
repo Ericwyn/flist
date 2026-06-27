@@ -27,6 +27,7 @@ var (
 	ErrTraversal    = errors.New("path traversal detected") // 2002
 	ErrForbidden    = errors.New("permission denied")       // 2003
 	ErrExists       = errors.New("target already exists")   // 2004
+	ErrDiskFull     = errors.New("insufficient disk space") // 2005
 	ErrInvalidName  = errors.New("invalid name")            // 2006
 	ErrNotFile      = errors.New("not a regular file")      // 2007
 	ErrNotDir       = errors.New("not a directory")         // 2008

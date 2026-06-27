@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { api, ApiError } from './lib/api';
-import { FileEntry, SearchHit } from './types';
+import { FileEntry, SearchHit, Clipboard } from './types';
 import { parentPath, joinPath } from './lib/path';
 import { useAuthStore } from './authStore';
 
@@ -33,6 +33,11 @@ interface FsState {
   searchResults: SearchHit[];
   searchTruncated: boolean;
   searchTimedOut: boolean;
+  searchRecursive: boolean; // 是否递归搜索子目录（会话级偏好）
+  searchHistory: string[]; // 最近搜索词（最多 10 条，最新在前，持久化到 localStorage）
+
+  // 剪贴板状态（复制 / 剪切两态）。
+  clipboard: Clipboard | null;
 
   navigate: (path: string, pushHistory?: boolean) => Promise<void>;
   initFromUrl: () => void;
@@ -57,6 +62,15 @@ interface FsState {
   // 搜索。
   runSearch: (query: string) => Promise<void>;
   clearSearch: () => void;
+  toggleSearchRecursive: () => void;
+  clearSearchHistory: () => void;
+
+  // 剪贴板：复制 / 剪切选中项，粘贴到当前目录（粘贴用 auto_rename 自动避让）。
+  // 返回错误信息字符串，成功返回 null。
+  copyToClipboard: (entries: FileEntry[]) => void;
+  cutToClipboard: (entries: FileEntry[]) => void;
+  paste: () => Promise<string | null>;
+  clearClipboard: () => void;
 }
 
 // URL_PREFIX 为文件浏览路由的统一前缀，避免与 /api、/assets 等真实路径冲突
@@ -83,6 +97,35 @@ function urlToPath(pathname: string): string {
   }
 }
 
+// 搜索历史持久化：保存最近搜索词到 localStorage，跨会话保留。
+const SEARCH_HISTORY_KEY = 'flist.searchHistory';
+const SEARCH_HISTORY_MAX = 10;
+
+function loadSearchHistory(): string[] {
+  try {
+    const raw = localStorage.getItem(SEARCH_HISTORY_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return [];
+    return arr.filter((x): x is string => typeof x === 'string').slice(0, SEARCH_HISTORY_MAX);
+  } catch {
+    return [];
+  }
+}
+
+// pushSearchHistory 将词去重置顶，截断到上限并持久化，返回新列表。
+function pushSearchHistory(prev: string[], query: string): string[] {
+  const q = query.trim();
+  if (!q) return prev;
+  const next = [q, ...prev.filter((x) => x !== q)].slice(0, SEARCH_HISTORY_MAX);
+  try {
+    localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(next));
+  } catch {
+    // 忽略持久化失败（隐私模式 / 配额），内存态仍可用。
+  }
+  return next;
+}
+
 export const useFsStore = create<FsState>((set, get) => ({
   currentPath: '/',
   entries: [],
@@ -104,10 +147,25 @@ export const useFsStore = create<FsState>((set, get) => ({
   searchResults: [],
   searchTruncated: false,
   searchTimedOut: false,
+  searchRecursive: false, // 默认仅搜索当前目录，递归由用户显式开启
+  searchHistory: loadSearchHistory(),
+
+  clipboard: null,
 
   navigate: async (path, pushHistory = true) => {
     const { sort, order, showHidden } = get();
-    set({ loading: true, error: null, selected: null });
+    // 进入任意目录都退出搜索态：搜索是覆盖在目录之上的临时视图，导航即应回到目录浏览。
+    set({
+      loading: true,
+      error: null,
+      selected: null,
+      searchOpen: false,
+      searchQuery: '',
+      searching: false,
+      searchResults: [],
+      searchTruncated: false,
+      searchTimedOut: false,
+    });
     try {
       const res = await api.fs.list(path, { sort, order, showHidden, pageSize: 1000 });
       set((state) => {
@@ -266,9 +324,17 @@ export const useFsStore = create<FsState>((set, get) => ({
       get().clearSearch();
       return;
     }
-    set({ searchOpen: true, searchQuery: q, searching: true });
+    set((state) => ({
+      searchOpen: true,
+      searchQuery: q,
+      searching: true,
+      searchHistory: pushSearchHistory(state.searchHistory, q),
+    }));
     try {
-      const res = await api.fs.search(get().currentPath, q, { recursive: true, showHidden: get().showHidden });
+      const res = await api.fs.search(get().currentPath, q, {
+        recursive: get().searchRecursive,
+        showHidden: get().showHidden,
+      });
       set({
         searching: false,
         searchResults: res.items,
@@ -290,6 +356,66 @@ export const useFsStore = create<FsState>((set, get) => ({
       searchTruncated: false,
       searchTimedOut: false,
     }),
+
+  // clearSearchHistory 清空最近搜索词记录（含 localStorage）。
+  clearSearchHistory: () => {
+    try {
+      localStorage.removeItem(SEARCH_HISTORY_KEY);
+    } catch {
+      // 忽略持久化失败。
+    }
+    set({ searchHistory: [] });
+  },
+
+  // toggleSearchRecursive 翻转递归开关；若当前已有搜索结果则用新范围立即重搜。
+  toggleSearchRecursive: () => {
+    const next = !get().searchRecursive;
+    set({ searchRecursive: next });
+    const { searchOpen, searchQuery } = get();
+    if (searchOpen && searchQuery) {
+      void get().runSearch(searchQuery);
+    }
+  },
+
+  copyToClipboard: (entries) => {
+    if (entries.length === 0) return;
+    const base = get().currentPath;
+    set({ clipboard: { mode: 'copy', paths: entries.map((e) => joinPath(base, e.name)) } });
+  },
+
+  cutToClipboard: (entries) => {
+    if (entries.length === 0) return;
+    const base = get().currentPath;
+    set({ clipboard: { mode: 'cut', paths: entries.map((e) => joinPath(base, e.name)) } });
+  },
+
+  clearClipboard: () => set({ clipboard: null }),
+
+  paste: async () => {
+    const clip = get().clipboard;
+    if (!clip || clip.paths.length === 0) return null;
+    const dst = get().currentPath;
+    try {
+      // 复制走 copy、剪切走 move；均开 auto_rename，落点同名自动避让不打断。
+      const results =
+        clip.mode === 'copy'
+          ? await api.fs.copy(clip.paths, dst, true)
+          : await api.fs.move(clip.paths, dst, true);
+      const failed = results.filter((r) => !r.ok);
+      // 剪切粘贴成功后清空剪贴板（复制保留，便于多次粘贴）。
+      if (clip.mode === 'cut') {
+        set({ clipboard: null });
+      }
+      await get().refresh();
+      if (failed.length > 0) {
+        return `${failed.length} 项粘贴失败：${opErrMessage(failed[0].error)}`;
+      }
+      return null;
+    } catch (e) {
+      handleError(e);
+      return errMessage(e);
+    }
+  },
 }));
 
 // errMessage 提取异常的可读信息。
@@ -311,10 +437,16 @@ function apiCodeMessage(code: number): string | null {
       return '权限不足';
     case 2004:
       return '目标已存在';
+    case 2005:
+      return '磁盘空间不足';
     case 2006:
       return '名称非法';
     case 2008:
       return '目标不是目录';
+    case 3001:
+      return '该目录已收藏';
+    case 3002:
+      return '收藏不存在';
     default:
       return null;
   }
@@ -325,6 +457,8 @@ function opErrMessage(name?: string): string {
   switch (name) {
     case 'file_exists':
       return '目标已存在';
+    case 'disk_full':
+      return '磁盘空间不足';
     case 'name_invalid':
       return '名称非法';
     case 'path_not_found':

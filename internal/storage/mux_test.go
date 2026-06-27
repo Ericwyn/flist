@@ -189,3 +189,28 @@ func TestMux_WalkIntoMount(t *testing.T) {
 		t.Errorf("walk into mount missing entries, got %v", paths)
 	}
 }
+
+func TestMux_Usage(t *testing.T) {
+	mux := storage.NewMux([]storage.Mount{
+		newLocalMount(t, "local", nil),
+	})
+
+	// 路由到挂载点 → 委托其 Usager。
+	total, free, err := mux.Usage(context.Background(), "/local")
+	if err != nil {
+		t.Fatalf("Usage into mount: %v", err)
+	}
+	if total == 0 || free == 0 || free > total {
+		t.Errorf("unexpected usage total=%d free=%d", total, free)
+	}
+
+	// 虚拟根无单一存储用量 → ErrNotSupported。
+	if _, _, err := mux.Usage(context.Background(), "/"); err != storage.ErrNotSupported {
+		t.Errorf("virtual root usage should be ErrNotSupported, got %v", err)
+	}
+
+	// 未知挂载点 → ErrNotFound。
+	if _, _, err := mux.Usage(context.Background(), "/ghost"); err != storage.ErrNotFound {
+		t.Errorf("unknown mount usage should be ErrNotFound, got %v", err)
+	}
+}

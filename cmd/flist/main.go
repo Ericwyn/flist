@@ -67,6 +67,7 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	fileSvc := service.NewFileService(backend)
+	bookmarkSvc := service.NewBookmarkService(st, backend)
 
 	created, genPass, err := authSvc.EnsureAdmin("admin", "")
 	if err != nil {
@@ -85,10 +86,11 @@ func run(logger *slog.Logger) error {
 	go runSessionCleanup(cleanupCtx, authSvc, logger)
 
 	router, err := server.NewRouter(server.Deps{
-		Config: cfg,
-		Auth:   authSvc,
-		Files:  fileSvc,
-		Logger: logger,
+		Config:    cfg,
+		Auth:      authSvc,
+		Files:     fileSvc,
+		Bookmarks: bookmarkSvc,
+		Logger:    logger,
 	})
 	if err != nil {
 		return err

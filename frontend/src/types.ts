@@ -73,3 +73,19 @@ export interface SearchOptions {
   showHidden?: boolean;
   limit?: number;
 }
+
+// 收藏夹条目，对应后端 model.Bookmark。
+export interface Bookmark {
+  id: number;
+  name: string;
+  path: string;
+  sortOrder: number;
+  createdAt: string;
+  valid: boolean; // 目标仍存在且为目录
+}
+
+// 剪贴板状态：复制 / 剪切两态，承载待粘贴的路径集合。
+export interface Clipboard {
+  mode: 'copy' | 'cut';
+  paths: string[];
+}

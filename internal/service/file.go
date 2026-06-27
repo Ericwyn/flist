@@ -11,6 +11,7 @@ import (
 	"io"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 
 	"flist/internal/model"
@@ -26,6 +27,7 @@ var (
 	ErrNotFile      = storage.ErrNotFile
 	ErrForbidden    = storage.ErrForbidden
 	ErrExists       = storage.ErrExists
+	ErrDiskFull     = storage.ErrDiskFull
 	ErrBadOp        = storage.ErrBadOp
 	ErrNotSupported = storage.ErrNotSupported
 )
@@ -38,6 +40,8 @@ const (
 
 	defaultSearchLimit = 500
 	maxSearchLimit     = 1000
+
+	maxRenameProbe = 1000 // 自动避让探测上限，防御构造大量同名导致的探测放大
 )
 
 // ListOptions 控制目录列表的排序、分页与隐藏文件展示。
@@ -172,29 +176,21 @@ func (s *FileService) Touch(ctx context.Context, apiPath string) (string, error)
 // Move 批量移动 / 重命名，尽力而为，逐项返回结果。dst 语义见 docs/4.phase2 §5.3。
 // dst 是否为已存在目录的判定（决定「移入」还是「重命名」）在服务层经 backend.Stat 完成，
 // 单项的落点冲突 / 越界 / 自身子树等校验由 backend.Move 负责。
-func (s *FileService) Move(ctx context.Context, srcs []string, dst string) []model.OpResult {
+//
+// autoRename 仅在「移入已存在目录」分支生效：落点同名时自动避让（name (2)）。
+// 「重命名 / 移动到指定名」分支始终严格冲突（保留 Phase 2 §5.3 语义）。
+func (s *FileService) Move(ctx context.Context, srcs []string, dst string, autoRename bool) []model.OpResult {
 	results := make([]model.OpResult, 0, len(srcs))
 	cleanedDst := util.CleanAPIPath(dst)
-
-	dstExists, dstIsDir := false, false
-	if info, err := s.backend.Stat(ctx, cleanedDst); err == nil {
-		dstExists = true
-		dstIsDir = info.Type == model.TypeDir
-	}
+	dstExists, dstIsDir := s.statDir(ctx, cleanedDst)
+	single := len(srcs) == 1
 
 	for _, src := range srcs {
 		srcClean := util.CleanAPIPath(src)
-		var targetAPI string
-		if dstExists && dstIsDir {
-			// dst 是已存在目录：移入该目录，落点为 dst/basename。
-			targetAPI = path.Join(cleanedDst, path.Base(srcClean))
-		} else {
-			// dst 不存在或为已存在文件：按「重命名 / 移动到指定名」处理，仅单个 src 合法。
-			if len(srcs) != 1 {
-				results = append(results, opFail(srcClean, storage.ErrNotDir))
-				continue
-			}
-			targetAPI = cleanedDst
+		targetAPI, fail := s.transferTarget(ctx, srcClean, cleanedDst, dstExists, dstIsDir, single, autoRename)
+		if fail != nil {
+			results = append(results, *fail)
+			continue
 		}
 		if err := s.backend.Move(ctx, srcClean, targetAPI); err != nil {
 			results = append(results, opFail(srcClean, err))
@@ -205,28 +201,24 @@ func (s *FileService) Move(ctx context.Context, srcs []string, dst string) []mod
 	return results
 }
 
-// Copy 批量复制，尽力而为，逐项返回结果。dst 语义与 Move 一致（Phase 3 启用接口）。
-func (s *FileService) Copy(ctx context.Context, srcs []string, dst string) []model.OpResult {
+// Copy 批量复制，尽力而为，逐项返回结果。dst 语义与 Move 一致。
+// autoRename 同 Move；每项复制前做磁盘空间预检（驱动支持 Usager 时）。
+func (s *FileService) Copy(ctx context.Context, srcs []string, dst string, autoRename bool) []model.OpResult {
 	results := make([]model.OpResult, 0, len(srcs))
 	cleanedDst := util.CleanAPIPath(dst)
-
-	dstExists, dstIsDir := false, false
-	if info, err := s.backend.Stat(ctx, cleanedDst); err == nil {
-		dstExists = true
-		dstIsDir = info.Type == model.TypeDir
-	}
+	dstExists, dstIsDir := s.statDir(ctx, cleanedDst)
+	single := len(srcs) == 1
 
 	for _, src := range srcs {
 		srcClean := util.CleanAPIPath(src)
-		var targetAPI string
-		if dstExists && dstIsDir {
-			targetAPI = path.Join(cleanedDst, path.Base(srcClean))
-		} else {
-			if len(srcs) != 1 {
-				results = append(results, opFail(srcClean, storage.ErrNotDir))
-				continue
-			}
-			targetAPI = cleanedDst
+		targetAPI, fail := s.transferTarget(ctx, srcClean, cleanedDst, dstExists, dstIsDir, single, autoRename)
+		if fail != nil {
+			results = append(results, *fail)
+			continue
+		}
+		if err := s.checkSpace(ctx, srcClean, path.Dir(targetAPI)); err != nil {
+			results = append(results, opFail(srcClean, err))
+			continue
 		}
 		if err := s.backend.Copy(ctx, srcClean, targetAPI); err != nil {
 			results = append(results, opFail(srcClean, err))
@@ -235,6 +227,97 @@ func (s *FileService) Copy(ctx context.Context, srcs []string, dst string) []mod
 		}
 	}
 	return results
+}
+
+// statDir 探测 dst 是否存在以及是否为目录（失败视为不存在）。
+func (s *FileService) statDir(ctx context.Context, cleanedDst string) (exists, isDir bool) {
+	if info, err := s.backend.Stat(ctx, cleanedDst); err == nil {
+		return true, info.Type == model.TypeDir
+	}
+	return false, false
+}
+
+// transferTarget 计算单项 move/copy 的落点 API 路径。
+//   - dst 是已存在目录：落点 dst/basename；autoRename 时自动避让同名
+//   - dst 不存在 / 是文件：仅单个 src 合法（重命名 / 移到指定名），否则该项 not_a_dir
+//
+// 返回非 nil 的 *OpResult 表示该项应直接记为失败。
+func (s *FileService) transferTarget(ctx context.Context, srcClean, cleanedDst string, dstExists, dstIsDir, single, autoRename bool) (string, *model.OpResult) {
+	if dstExists && dstIsDir {
+		base := path.Base(srcClean)
+		if autoRename {
+			return s.avoidConflict(ctx, cleanedDst, base), nil
+		}
+		return path.Join(cleanedDst, base), nil
+	}
+	if !single {
+		r := opFail(srcClean, storage.ErrNotDir)
+		return "", &r
+	}
+	return cleanedDst, nil
+}
+
+// avoidConflict 为「移入目录」的落点探测不冲突的名字：dir/base 已存在时，
+// 按 "name (2).ext" → "name (3).ext" 递增探测首个不存在名（上限 maxRenameProbe）。
+// 文件保留扩展名，目录及 dotfile 整体作为主名。
+func (s *FileService) avoidConflict(ctx context.Context, dir, base string) string {
+	target := path.Join(dir, base)
+	if _, err := s.backend.Stat(ctx, target); err != nil {
+		return target // 不存在，直接用
+	}
+	ext := path.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+	if stem == "" { // dotfile（如 .bashrc）：整体作主名，不拆扩展名
+		stem = base
+		ext = ""
+	}
+	for i := 2; i < maxRenameProbe+2; i++ {
+		cand := path.Join(dir, stem+" ("+strconv.Itoa(i)+")"+ext)
+		if _, err := s.backend.Stat(ctx, cand); err != nil {
+			return cand
+		}
+	}
+	return target // 超限：回退原名，由 backend.Copy/Move 返回 ErrExists
+}
+
+// checkSpace 在复制前预检目标存储可用空间（仅当驱动实现 Usager）。
+// 无法判断（不支持 Usager / 查询失败 / 计算源大小失败）时保守放行，交由实际操作处理。
+func (s *FileService) checkSpace(ctx context.Context, src, dstDir string) error {
+	u, ok := s.backend.(storage.Usager)
+	if !ok {
+		return nil
+	}
+	_, free, err := u.Usage(ctx, dstDir)
+	if err != nil {
+		return nil
+	}
+	need, err := s.treeSize(ctx, src)
+	if err != nil {
+		return nil
+	}
+	if need > free {
+		return storage.ErrDiskFull
+	}
+	return nil
+}
+
+// treeSize 计算 src 的总字节数：文件取自身大小；目录累加其下普通文件大小。
+func (s *FileService) treeSize(ctx context.Context, src string) (uint64, error) {
+	info, err := s.backend.Stat(ctx, src)
+	if err != nil {
+		return 0, err
+	}
+	if info.Type == model.TypeFile {
+		return uint64(info.Size), nil
+	}
+	var total uint64
+	err = s.walk(ctx, src, true, func(_ string, fi model.FileInfo) error {
+		if fi.Type == model.TypeFile {
+			total += uint64(fi.Size)
+		}
+		return nil
+	})
+	return total, err
 }
 
 // Delete 批量递归删除，尽力而为，逐项返回结果。root 自身保护等由 backend.Remove 负责。
@@ -444,6 +527,8 @@ func errCodeName(err error) string {
 		return "permission_denied"
 	case errors.Is(err, storage.ErrExists):
 		return "file_exists"
+	case errors.Is(err, storage.ErrDiskFull):
+		return "disk_full"
 	case errors.Is(err, storage.ErrNotDir):
 		return "not_a_dir"
 	case errors.Is(err, storage.ErrNotFile):
