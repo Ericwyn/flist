@@ -39,11 +39,12 @@ func New(rootReal, stagingDir string) *Local {
 
 // 确保 Local 实现了核心接口与可选接口。
 var (
-	_ storage.Backend       = (*Local)(nil)
-	_ storage.Walker        = (*Local)(nil)
-	_ storage.Usager        = (*Local)(nil)
-	_ storage.Uploader      = (*Local)(nil)
-	_ storage.ContentEditor = (*Local)(nil)
+	_ storage.Backend         = (*Local)(nil)
+	_ storage.Walker          = (*Local)(nil)
+	_ storage.Usager          = (*Local)(nil)
+	_ storage.Uploader        = (*Local)(nil)
+	_ storage.ContentEditor   = (*Local)(nil)
+	_ storage.ProgressCopier  = (*Local)(nil)
 )
 
 func (b *Local) Name() string { return "local" }
@@ -200,7 +201,17 @@ func (b *Local) Create(_ context.Context, p string) error {
 }
 
 // Move 移动 / 重命名 src 到 dst（落点须不存在，不覆盖；不得移入自身子树）。
-func (b *Local) Move(_ context.Context, src, dst string) error {
+func (b *Local) Move(ctx context.Context, src, dst string) error {
+	return b.move(ctx, src, dst, nil)
+}
+
+// MoveWithProgress 与 Move 相同，但跨分区回退为复制时通过 fn 上报项内字节进度，
+// 并在 ctx 取消时中止。同分区 rename 为瞬时操作，不产生进度回调。
+func (b *Local) MoveWithProgress(ctx context.Context, src, dst string, fn storage.ProgressFunc) error {
+	return b.move(ctx, src, dst, fn)
+}
+
+func (b *Local) move(ctx context.Context, src, dst string, fn storage.ProgressFunc) error {
 	srcAPI := util.CleanAPIPath(src)
 	dstAPI := util.CleanAPIPath(dst)
 	if srcAPI == "/" {
@@ -226,8 +237,14 @@ func (b *Local) Move(_ context.Context, src, dst string) error {
 	if isSubpath(srcLocal, dstLocal) {
 		return storage.ErrBadOp // 不允许移入自身子树
 	}
-	if err := util.MovePath(srcLocal, dstLocal); err != nil {
-		return mapErr(err)
+	var merr error
+	if fn == nil {
+		merr = util.MovePath(srcLocal, dstLocal)
+	} else {
+		merr = util.MovePathWithProgress(ctx, srcLocal, dstLocal, func(copied int64) { fn(copied) })
+	}
+	if err := mapErr(merr); err != nil {
+		return err
 	}
 	return nil
 }
@@ -252,7 +269,17 @@ func (b *Local) Remove(_ context.Context, p string) error {
 }
 
 // Copy 递归复制 src 到 dst（落点须不存在；不得复制进自身子树）。
-func (b *Local) Copy(_ context.Context, src, dst string) error {
+func (b *Local) Copy(ctx context.Context, src, dst string) error {
+	return b.copy(ctx, src, dst, nil)
+}
+
+// CopyWithProgress 与 Copy 相同，但通过 fn 上报当前 src 项内已复制字节数，
+// 并在 ctx 取消时中止。fn 为 nil 时退化为 Copy。
+func (b *Local) CopyWithProgress(ctx context.Context, src, dst string, fn storage.ProgressFunc) error {
+	return b.copy(ctx, src, dst, fn)
+}
+
+func (b *Local) copy(ctx context.Context, src, dst string, fn storage.ProgressFunc) error {
 	srcAPI := util.CleanAPIPath(src)
 	dstAPI := util.CleanAPIPath(dst)
 	if srcAPI == "/" {
@@ -278,8 +305,14 @@ func (b *Local) Copy(_ context.Context, src, dst string) error {
 	if isSubpath(srcLocal, dstLocal) {
 		return storage.ErrBadOp
 	}
-	if err := util.CopyPath(srcLocal, dstLocal); err != nil {
-		return mapErr(err)
+	var cerr error
+	if fn == nil {
+		cerr = util.CopyPath(srcLocal, dstLocal)
+	} else {
+		cerr = util.CopyPathWithProgress(ctx, srcLocal, dstLocal, func(copied int64) { fn(copied) })
+	}
+	if err := mapErr(cerr); err != nil {
+		return err
 	}
 	return nil
 }

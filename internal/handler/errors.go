@@ -31,6 +31,8 @@ const (
 	CodeFileTooLarge       = 2014
 	CodeReadonlyStorage    = 2015
 	CodeInvalidRevision    = 2016
+	CodeFileOpNotFound     = 2017
+	CodeFileOpBusy         = 2018
 	CodeBookmarkExists     = 3001
 	CodeBookmarkNotFound   = 3002
 	CodeBadRequest         = 4000

@@ -3,6 +3,7 @@ import {
   FileEntry, ListResult, PreviewResult, ListOptions,
   OpResult, SearchResult, SearchHit, SearchOptions, Bookmark,
   UploadInitResult, FileContent, SaveContentResult, SpaceInfo, FileRevision,
+  FileOpStartResult,
 } from '../types';
 import { parentPath, joinPath } from './path';
 
@@ -448,6 +449,43 @@ export const api = {
         readonly: raw.readonly,
       };
     },
+
+    // op: 异步文件操作任务（copy/move/delete 后台化 + SSE 进度）。
+    // 发起任务立即返回 task_id（HTTP 202）；进度通过 opProgress 订阅 SSE。
+    op: {
+      async copy(src: string[], dst: string, autoRename = false): Promise<FileOpStartResult> {
+        const raw = await request<RawFileOpStart>('/api/fs/op/copy', {
+          method: 'POST',
+          body: { src, dst, auto_rename: autoRename },
+        });
+        return mapFileOpStart(raw);
+      },
+      async move(src: string[], dst: string, autoRename = false): Promise<FileOpStartResult> {
+        const raw = await request<RawFileOpStart>('/api/fs/op/move', {
+          method: 'POST',
+          body: { src, dst, auto_rename: autoRename },
+        });
+        return mapFileOpStart(raw);
+      },
+      async delete(paths: string[]): Promise<FileOpStartResult> {
+        const raw = await request<RawFileOpStart>('/api/fs/op/delete', {
+          method: 'POST',
+          body: { paths },
+        });
+        return mapFileOpStart(raw);
+      },
+      async cancel(taskId: string): Promise<void> {
+        await request<null>('/api/fs/op/cancel', {
+          method: 'POST',
+          body: { task_id: taskId },
+        });
+      },
+      // progress 返回 EventSource 订阅任务进度（GET，依赖同源 Cookie 鉴权，
+      // 因 EventSource 无法携带 Authorization 头）。调用方负责关闭。
+      progress(taskId: string): EventSource {
+        return new EventSource(`/api/fs/op/progress?id=${encodeURIComponent(taskId)}`);
+      },
+    },
   },
 
   bookmarks: {
@@ -683,4 +721,20 @@ interface RawSpace {
     used_percent?: number;
   };
   readonly: boolean;
+}
+
+interface RawFileOpStart {
+  task_id: string;
+  op: string;
+  total_items: number;
+  total_bytes: number;
+}
+
+function mapFileOpStart(r: RawFileOpStart): FileOpStartResult {
+  return {
+    taskId: r.task_id,
+    op: r.op as FileOpStartResult['op'],
+    totalItems: r.total_items,
+    totalBytes: r.total_bytes,
+  };
 }

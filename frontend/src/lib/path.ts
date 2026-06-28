@@ -44,6 +44,12 @@ export function parentPath(p: string): string {
   return idx <= 0 ? '/' : trimmed.slice(0, idx);
 }
 
+// baseName 返回路径末尾的文件 / 目录名。
+export function baseName(p: string): string {
+  if (p === '/' || p === '') return '/';
+  return p.replace(/\/$/, '').slice(p.replace(/\/$/, '').lastIndexOf('/') + 1);
+}
+
 // breadcrumbs 将路径切分为面包屑片段（含根）。
 export function breadcrumbs(p: string): { name: string; path: string }[] {
   const crumbs = [{ name: '我的文件', path: '/' }];

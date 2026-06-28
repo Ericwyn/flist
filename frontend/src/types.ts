@@ -179,3 +179,87 @@ export interface UploadTask {
   lastTs: number; // 上次进度快照时间戳 ms（内部）
   error?: string; // 失败时的可读信息
 }
+
+// 异步文件操作任务状态机：
+//   queued   已入队，等待全局串行槽
+//   running  执行中
+//   done     全部完成（可能有单项失败，看 results）
+//   canceled 用户取消
+//   error    整体失败
+export type FileOpStatus = 'queued' | 'running' | 'done' | 'canceled' | 'error';
+
+// 异步文件操作类型。
+export type FileOpKind = 'copy' | 'move' | 'delete';
+
+// 后端 SSE 推送的任务快照（对应 model.FileOpSnapshot）。
+export interface FileOpSnapshot {
+  op: FileOpKind;
+  status: FileOpStatus;
+  total_items: number;
+  total_bytes: number;
+  done_items: number;
+  done_bytes: number;
+  cur_index: number;
+  cur_name: string;
+  cur_size: number;
+  cur_copied: number;
+  speed: number;
+  results?: OpResult[];
+  error?: string;
+  started_at: string;
+}
+
+// 后端 SSE 事件（对应 service.FileOpEvent）。
+export interface FileOpEvent {
+  type: 'snapshot' | 'item_start' | 'item_progress' | 'item_done' | 'finished';
+  snapshot: FileOpSnapshot;
+  index?: number;
+  name?: string;
+  size?: number;
+  copied?: number;
+  ok?: boolean;
+  error?: string;
+}
+
+// POST /api/fs/op/* 返回的任务句柄。
+export interface FileOpStartResult {
+  taskId: string;
+  op: FileOpKind;
+  totalItems: number;
+  totalBytes: number;
+}
+
+// 单项执行状态（详情面板用）。运行中由 item_start/item_done 事件重建，
+// 完成后由 finished 携带的 results[] 覆盖（authoritative）。
+export type FileOpItemStatus = 'pending' | 'running' | 'done' | 'failed' | 'canceled' | 'skipped';
+
+export interface FileOpItem {
+  index: number;
+  name: string; // basename
+  size: number;
+  status: FileOpItemStatus;
+  error?: string; // 失败 / 取消 / 跳过时的错误码名
+}
+
+// 前端文件操作任务（内存态，不持久化；task_id 持久化到 localStorage 供跨标签页恢复）。
+export interface FileOpTask {
+  id: string; // 后端 task_id
+  op: FileOpKind;
+  dst?: string; // copy/move 的目标目录（用于完成时刷新判断）
+  srcs: string[]; // 原始路径（用于完成时刷新判断 + 详情面板 fallback 名称）
+  status: FileOpStatus;
+  totalItems: number;
+  totalBytes: number;
+  doneItems: number;
+  doneBytes: number;
+  curIndex: number;
+  curName: string;
+  curSize: number;
+  curCopied: number;
+  speed: number;
+  results?: OpResult[];
+  items?: FileOpItem[]; // 详情面板用：逐项状态
+  error?: string;
+  // 内部：SSE 连接句柄，用于关闭
+  _es?: EventSource;
+}

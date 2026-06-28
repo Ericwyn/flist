@@ -94,6 +94,7 @@ func run(logger *slog.Logger, levelVar *slog.LevelVar) error {
 	fileSvc := service.NewFileService(backend, fileLocker, cfg.MaxEdit)
 	bookmarkSvc := service.NewBookmarkService(st, backend)
 	uploadSvc := service.NewUploadService(backend, fileLocker, cfg.MaxUpload)
+	fileOpSvc := service.NewFileOpService(fileSvc, logger)
 
 	created, genPass, err := authSvc.EnsureAdmin("admin", "")
 	if err != nil {
@@ -112,6 +113,8 @@ func run(logger *slog.Logger, levelVar *slog.LevelVar) error {
 	go runSessionCleanup(cleanupCtx, authSvc, logger)
 	// 后台定时清理过期上传会话与孤儿暂存分片（24h）。
 	go runUploadSweep(cleanupCtx, uploadSvc, logger)
+	// 后台定时清理已完成的异步文件操作任务（断线重连窗口外）。
+	go runFileOpSweep(cleanupCtx, fileOpSvc, logger)
 
 	router, err := server.NewRouter(server.Deps{
 		Config:    cfg,
@@ -119,6 +122,7 @@ func run(logger *slog.Logger, levelVar *slog.LevelVar) error {
 		Files:     fileSvc,
 		Bookmarks: bookmarkSvc,
 		Uploads:   uploadSvc,
+		FileOps:   fileOpSvc,
 		Logger:    logger,
 	})
 	if err != nil {
@@ -175,6 +179,22 @@ func runUploadSweep(ctx context.Context, uploads *service.UploadService, logger 
 		case <-ticker.C:
 			if n := uploads.Sweep(maxAge); n > 0 {
 				logger.Info("stale upload sessions cleaned", slog.Int("count", n))
+			}
+		}
+	}
+}
+
+// runFileOpSweep 每分钟清理一次已完成的异步文件操作任务（保留窗口 10min）。
+func runFileOpSweep(ctx context.Context, ops *service.FileOpService, logger *slog.Logger) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if n := ops.Sweep(); n > 0 {
+				logger.Info("stale fileop tasks cleaned", slog.Int("count", n))
 			}
 		}
 	}

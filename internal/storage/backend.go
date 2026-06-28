@@ -154,3 +154,17 @@ type Uploader interface {
 // ErrStopWalk 是 Walk 回调用于提前结束遍历的哨兵错误（命中上限 / 超时），
 // 驱动应识别它并停止遍历、且不把它当作真正的错误向上返回。
 var ErrStopWalk = errors.New("stop walk")
+
+// ProgressFunc 由带进度的复制 / 移动回调上报：参数为当前 src 项内已处理字节数
+//（每个 src 项独立从 0 计数）。异步文件操作服务据此推送项内字节进度。
+type ProgressFunc func(copied int64)
+
+// ProgressCopier 是可选接口：驱动支持带进度回调与取消的复制 / 移动，供异步文件操作
+//（FileOpService）使用。未实现时异步服务回退到普通 Copy/Move（仅项级进度、无字节进度）。
+//
+// fn 在同分区 rename（瞬时）等无可观测字节的场景下不会被调用；仅在涉及字节搬运的
+// 复制路径上回调。ctx 取消时驱动应中止并返回 ctx.Err()。
+type ProgressCopier interface {
+	CopyWithProgress(ctx context.Context, src, dst string, fn ProgressFunc) error
+	MoveWithProgress(ctx context.Context, src, dst string, fn ProgressFunc) error
+}

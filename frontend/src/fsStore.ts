@@ -4,6 +4,7 @@ import { FileEntry, SearchHit, Clipboard } from './types';
 import { parentPath, joinPath } from './lib/path';
 import { useAuthStore } from './authStore';
 import { useStore } from './store';
+import { useFileOpStore } from './fileOpStore';
 
 type SortKey = 'name' | 'size' | 'mtime';
 type SortOrder = 'asc' | 'desc';
@@ -473,28 +474,17 @@ export const useFsStore = create<FsState>((set, get) => ({
     return get().removePaths(paths);
   },
 
-  // removePaths 按完整路径批量删除。删除后：搜索态重跑搜索刷新命中、否则刷新当前目录。
+  // removePaths 按完整路径批量删除。委托给异步文件操作服务，立即返回；
+  // 进度走传输面板，完成事件里若当前目录受影响则刷新。
   removePaths: async (paths) => {
     if (paths.length === 0) return null;
-    try {
-      const results = await api.fs.remove(paths);
-      const failed = results.filter((r) => !r.ok);
-      const { searchOpen, searchQuery } = get();
-      if (searchOpen && searchQuery) {
-        // 清空已失效的搜索选择并以原词重搜，被删项随之消失。
-        set({ searchSelected: new Set<string>(), searchAnchor: null });
-        await get().runSearch(searchQuery);
-      } else {
-        await get().refresh();
-      }
-      if (failed.length > 0) {
-        return `${failed.length} 项删除失败：${opErrMessage(failed[0].error)}`;
-      }
-      return null;
-    } catch (e) {
-      handleError(e);
-      return errMessage(e);
+    void useFileOpStore.getState().startDelete(paths);
+    // 搜索态下清空已失效的搜索选择，避免操作期间残留高亮。
+    if (get().searchOpen && get().searchQuery) {
+      set({ searchSelected: new Set<string>(), searchAnchor: null });
+      void get().runSearch(get().searchQuery);
     }
+    return null;
   },
 
   runSearch: async (query) => {
@@ -596,26 +586,16 @@ export const useFsStore = create<FsState>((set, get) => ({
     const clip = get().clipboard;
     if (!clip || clip.paths.length === 0) return null;
     const dst = get().currentPath;
-    try {
-      // 复制走 copy、剪切走 move；均开 auto_rename，落点同名自动避让不打断。
-      const results =
-        clip.mode === 'copy'
-          ? await api.fs.copy(clip.paths, dst, true)
-          : await api.fs.move(clip.paths, dst, true);
-      const failed = results.filter((r) => !r.ok);
-      // 剪切粘贴成功后清空剪贴板（复制保留，便于多次粘贴）。
-      if (clip.mode === 'cut') {
-        set({ clipboard: null });
-      }
-      await get().refresh();
-      if (failed.length > 0) {
-        return `${failed.length} 项粘贴失败：${opErrMessage(failed[0].error)}`;
-      }
-      return null;
-    } catch (e) {
-      handleError(e);
-      return errMessage(e);
+    // 委托给异步文件操作服务：复制走 copy、剪切走 move；均开 auto_rename 自动避让。
+    // 任务进度通过传输面板展示，完成事件里按需刷新当前目录。立即返回不阻塞 UI。
+    if (clip.mode === 'copy') {
+      void useFileOpStore.getState().startCopy(clip.paths, dst, true);
+    } else {
+      void useFileOpStore.getState().startMove(clip.paths, dst, true);
+      // 剪切粘贴已发起即清空剪贴板（复制保留，便于多次粘贴）。
+      set({ clipboard: null });
     }
+    return null;
   },
 }));
 

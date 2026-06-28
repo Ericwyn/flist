@@ -245,6 +245,11 @@ func (s *FileService) statDir(ctx context.Context, cleanedDst string) (exists, i
 	return false, false
 }
 
+// StatDir 探测 dst 是否存在以及是否为目录（导出版，供异步文件操作服务复用）。
+func (s *FileService) StatDir(ctx context.Context, dst string) (bool, bool) {
+	return s.statDir(ctx, util.CleanAPIPath(dst))
+}
+
 // transferTarget 计算单项 move/copy 的落点 API 路径。
 //   - dst 是已存在目录：落点 dst/basename；autoRename 时自动避让同名
 //   - dst 不存在 / 是文件：仅单个 src 合法（重命名 / 移到指定名），否则该项 not_a_dir
@@ -263,6 +268,12 @@ func (s *FileService) transferTarget(ctx context.Context, srcClean, cleanedDst s
 		return "", &r
 	}
 	return cleanedDst, nil
+}
+
+// TransferTarget 计算单项 move/copy 的落点 API 路径（导出版，供异步文件操作服务复用）。
+// 语义与 Move/Copy 内部完全一致，避免在异步路径上重复实现业务规则。
+func (s *FileService) TransferTarget(ctx context.Context, src, dst string, dstExists, dstIsDir, single, autoRename bool) (string, *model.OpResult) {
+	return s.transferTarget(ctx, util.CleanAPIPath(src), util.CleanAPIPath(dst), dstExists, dstIsDir, single, autoRename)
 }
 
 // avoidConflict 为「移入目录」的落点探测不冲突的名字：dir/base 已存在时，
@@ -399,6 +410,11 @@ func (s *FileService) checkSpace(ctx context.Context, src, dstDir string) error 
 	return nil
 }
 
+// CheckSpace 在复制前预检目标存储可用空间（导出版，供异步文件操作服务复用）。
+func (s *FileService) CheckSpace(ctx context.Context, src, dstDir string) error {
+	return s.checkSpace(ctx, util.CleanAPIPath(src), util.CleanAPIPath(dstDir))
+}
+
 // treeSize 计算 src 的总字节数：文件取自身大小；目录累加其下普通文件大小。
 func (s *FileService) treeSize(ctx context.Context, src string) (uint64, error) {
 	info, err := s.backend.Stat(ctx, src)
@@ -416,6 +432,11 @@ func (s *FileService) treeSize(ctx context.Context, src string) (uint64, error) 
 		return nil
 	})
 	return total, err
+}
+
+// TreeSize 计算 src 的总字节数（导出版，供异步文件操作服务用于进度总量预估）。
+func (s *FileService) TreeSize(ctx context.Context, src string) (uint64, error) {
+	return s.treeSize(ctx, util.CleanAPIPath(src))
 }
 
 // Delete 批量递归删除，尽力而为，逐项返回结果。root 自身保护等由 backend.Remove 负责。

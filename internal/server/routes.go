@@ -20,6 +20,7 @@ type Deps struct {
 	Files     *service.FileService
 	Bookmarks *service.BookmarkService
 	Uploads   *service.UploadService
+	FileOps   *service.FileOpService
 	Logger    *slog.Logger
 }
 
@@ -39,6 +40,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 	twofactorHandler := handler.NewTwoFactorHandler(d.Auth)
 	systemHandler := handler.NewSystemHandler()
 	fileHandler := handler.NewFileHandler(d.Files, d.Uploads, d.Logger)
+	fileOpHandler := handler.NewFileOpHandler(d.FileOps, d.Logger)
 	bookmarkHandler := handler.NewBookmarkHandler(d.Bookmarks, d.Logger)
 
 	// 写操作限流：10/s per IP（见 0.backend-design.md §9.3）。
@@ -103,6 +105,17 @@ func NewRouter(d Deps) (http.Handler, error) {
 
 			// Phase 4 分片上传：仅受全局限流（50/s），避免大文件多分片被写限流 10/s 拖慢。
 			protected.Post("/fs/upload/chunk", fileHandler.UploadChunk)
+
+			// 异步文件操作任务（copy/move/delete 后台化 + SSE 进度）。发起 / 取消走写限流；
+			// progress SSE 为只读长连接，仅受全局限流。
+			protected.Get("/fs/op/progress", fileOpHandler.Progress)
+			protected.Group(func(wr chi.Router) {
+				wr.Use(writeLimit)
+				wr.Post("/fs/op/copy", fileOpHandler.Copy)
+				wr.Post("/fs/op/move", fileOpHandler.Move)
+				wr.Post("/fs/op/delete", fileOpHandler.Delete)
+				wr.Post("/fs/op/cancel", fileOpHandler.Cancel)
+			})
 
 			// Phase 3 收藏夹（元数据操作，仅受全局限流）。
 			protected.Get("/bookmarks", bookmarkHandler.List)
