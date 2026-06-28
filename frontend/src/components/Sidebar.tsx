@@ -18,7 +18,7 @@ export function Sidebar() {
   const { currentPath, navigate, spaceVersion, openPreview } = useFsStore();
   const { user } = useAuthStore();
   const { items, load, add, rename, remove, reorder } = useBookmarkStore();
-  const { recentAccess, clearRecentAccess, recordRecentAccess } = useStore();
+  const { recentAccess, clearRecentAccess, recordRecentAccess, recentEnabled } = useStore();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   // 路径级容量：随当前目录与写操作（spaceVersion）刷新。
@@ -239,6 +239,7 @@ export function Sidebar() {
         </section>
 
         {/* 最近访问 */}
+        {recentEnabled && (
         <section className="mt-5">
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-[11px] font-medium text-slate-400 dark:text-slate-500 uppercase tracking-wider">
@@ -288,6 +289,7 @@ export function Sidebar() {
             </div>
           )}
         </section>
+        )}
       </div>
 
       {/* 路径级容量：常驻底部状态栏，随当前目录刷新；驱动不支持或不可用时隐藏。 */}

@@ -4,7 +4,7 @@ import { api, ApiError } from '../lib/api';
 import { useAuthStore } from '../authStore';
 import { useStore } from '../store';
 import { cn } from '../lib/utils';
-import { User, Lock, Palette, LogOut, Sun, Moon, Loader2, Check } from 'lucide-react';
+import { User, Lock, Palette, LogOut, Sun, Moon, Loader2, Check, History } from 'lucide-react';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -35,7 +35,7 @@ function errMessage(e: unknown, map: Record<number, string>): string {
 // SettingsModal 集中管理用户名、密码、主题与退出。
 export function SettingsModal({ onClose }: SettingsModalProps) {
   const { user, setUser, logout } = useAuthStore();
-  const { theme, toggleTheme } = useStore();
+  const { theme, toggleTheme, recentEnabled, recentLimit, setRecentEnabled, setRecentLimit } = useStore();
 
   return (
     <Modal isOpen={true} onClose={onClose} title="设置" maxWidth="md">
@@ -46,6 +46,12 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
         />
         <PasswordSection />
         <AppearanceSection theme={theme} onToggle={toggleTheme} />
+        <RecentAccessSection
+          enabled={recentEnabled}
+          limit={recentLimit}
+          onToggle={setRecentEnabled}
+          onLimitChange={setRecentLimit}
+        />
         <LogoutSection onLogout={() => logout()} />
       </div>
     </Modal>
@@ -261,6 +267,66 @@ function AppearanceSection({ theme, onToggle }: { theme: 'light' | 'dark'; onTog
             <Moon className="w-3.5 h-3.5" />
           </button>
         </div>
+      </div>
+    </section>
+  );
+}
+
+function RecentAccessSection({
+  enabled,
+  limit,
+  onToggle,
+  onLimitChange,
+}: {
+  enabled: boolean;
+  limit: number;
+  onToggle: (enabled: boolean) => void;
+  onLimitChange: (limit: number) => void;
+}) {
+  return (
+    <section>
+      <SectionHeader icon={<History className="w-4 h-4" />} title="最近访问" />
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-slate-600 dark:text-slate-300">启用最近访问</span>
+          <button
+            onClick={() => onToggle(!enabled)}
+            className={cn(
+              'relative inline-flex h-5 w-9 items-center rounded-full transition-colors',
+              enabled ? 'bg-blue-600' : 'bg-slate-300 dark:bg-slate-600',
+            )}
+            aria-label={enabled ? '关闭最近访问' : '开启最近访问'}
+          >
+            <span
+              className={cn(
+                'inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-sm transition-transform',
+                enabled ? 'translate-x-[18px]' : 'translate-x-[3px]',
+              )}
+            />
+          </button>
+        </div>
+        {enabled && (
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-slate-600 dark:text-slate-300">保留数量</span>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={1}
+                max={50}
+                value={limit}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value, 10);
+                  if (Number.isFinite(v)) onLimitChange(v);
+                }}
+                className="w-16 px-2 py-1 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-center focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-400 transition-colors"
+              />
+              <span className="text-xs text-slate-400 dark:text-slate-500">条（1–50）</span>
+            </div>
+          </div>
+        )}
+        <p className="text-[11px] text-slate-400 dark:text-slate-500">
+          设置仅在当前浏览器生效（存储于 localStorage）。
+        </p>
       </div>
     </section>
   );
