@@ -56,11 +56,19 @@ type ListOptions struct {
 // FileService 提供文件操作编排，委托具体存取给注入的 storage.Backend。
 type FileService struct {
 	backend storage.Backend
+	locker  *util.PathLocker // 写串行化（保存文本，与上传合并共享同一实例）
+	maxEdit int64            // 单文件在线编辑大小上限（字节），<=0 表示不限
 }
 
 // NewFileService 构造文件服务。backend 为存储驱动（local / Mux / 远程驱动）。
-func NewFileService(backend storage.Backend) *FileService {
-	return &FileService{backend: backend}
+// locker 用于文本保存的路径级写串行化（建议与 UploadService 共享同一实例，
+// 使「文本保存」与「上传合并」对同一目标路径互斥）。maxEdit 为可编辑文件大小上限
+//（字节，<=0 表示不限）。locker 为 nil 时自动创建一个独立实例（主要便于测试）。
+func NewFileService(backend storage.Backend, locker *util.PathLocker, maxEdit int64) *FileService {
+	if locker == nil {
+		locker = util.NewPathLocker()
+	}
+	return &FileService{backend: backend, locker: locker, maxEdit: maxEdit}
 }
 
 // List 列出目录内容，支持排序、隐藏过滤与分页。排序 / 分页在服务层完成（后端无关）。
@@ -288,6 +296,86 @@ func (s *FileService) Usage(ctx context.Context, apiPath string) (total, free ui
 		return 0, 0, storage.ErrNotSupported
 	}
 	return u.Usage(ctx, util.CleanAPIPath(apiPath))
+}
+
+// ReadContent 完整读取可编辑文本（文件编辑与路径级容量优化）。
+// 驱动未实现 ContentEditor 时返回 storage.ErrNotSupported；超限 / 非文本由驱动返回对应错误。
+func (s *FileService) ReadContent(ctx context.Context, apiPath string) (*model.FileContentResult, error) {
+	ed, ok := s.backend.(storage.ContentEditor)
+	if !ok {
+		return nil, storage.ErrNotSupported
+	}
+	return ed.ReadText(ctx, util.CleanAPIPath(apiPath), s.maxEdit)
+}
+
+// SaveContent 以乐观锁保存文本。对同一规范化路径加 path lock 串行化（与上传合并共享 locker，
+// 避免「保存」与「上传合并」交错写）。驱动未实现 ContentEditor 时返回 storage.ErrNotSupported。
+//
+// 保存前对新内容做大小上限校验（与读取口径一致），避免绕过 ReadText 直接 PUT 超大内容。
+func (s *FileService) SaveContent(ctx context.Context, apiPath string, content []byte, expected model.FileRevision, force bool) (*model.SaveContentResult, error) {
+	ed, ok := s.backend.(storage.ContentEditor)
+	if !ok {
+		return nil, storage.ErrNotSupported
+	}
+	if s.maxEdit > 0 && int64(len(content)) > s.maxEdit {
+		return nil, storage.ErrFileTooLarge
+	}
+	cleaned := util.CleanAPIPath(apiPath)
+	s.locker.Lock(cleaned)
+	defer s.locker.Unlock(cleaned)
+	return ed.WriteText(ctx, cleaned, content, expected, force)
+}
+
+// Space 返回 apiPath 所在存储的容量信息（路径级容量）。
+//
+// 行为：路径必须真实存在（否则 ErrNotFound，不回退父目录）；驱动未实现 Usager 时
+// 返回 supported=false 而非错误。free 与 available 同取 Usager 的 free（Bavail 语义），
+// used = total - free。
+func (s *FileService) Space(ctx context.Context, apiPath string) (*model.SpaceResult, error) {
+	cleaned := util.CleanAPIPath(apiPath)
+
+	// 路径级容量必须对应真实存在的目录 / 文件，不回退父目录。
+	if _, err := s.backend.Stat(ctx, cleaned); err != nil {
+		return nil, err
+	}
+
+	res := &model.SpaceResult{
+		Path:  cleaned,
+		Mount: model.MountInfo{Name: s.backend.Name(), Prefix: "/"},
+	}
+
+	u, ok := s.backend.(storage.Usager)
+	if !ok {
+		res.Space.Supported = false
+		return res, nil
+	}
+	total, free, err := u.Usage(ctx, cleaned)
+	if err != nil {
+		// 路径存在但容量查询不被支持（如虚拟根）：降级为不支持，而非整次失败。
+		if errors.Is(err, storage.ErrNotSupported) {
+			res.Space.Supported = false
+			return res, nil
+		}
+		return nil, err
+	}
+
+	var used uint64
+	if total > free {
+		used = total - free
+	}
+	var usedPercent float64
+	if total > 0 {
+		usedPercent = float64(used) / float64(total) * 100
+	}
+	res.Space = model.SpaceUsage{
+		Supported:   true,
+		Total:       total,
+		Used:        used,
+		Free:        free,
+		Available:   free, // 首期 available 等同 free（Bavail 语义），见 spec
+		UsedPercent: usedPercent,
+	}
+	return res, nil
 }
 
 // checkSpace 在复制前预检目标存储可用空间（仅当驱动实现 Usager）。

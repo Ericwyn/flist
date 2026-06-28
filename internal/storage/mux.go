@@ -31,6 +31,7 @@ type Mux struct {
 var _ Backend = (*Mux)(nil)
 var _ Walker = (*Mux)(nil)
 var _ Usager = (*Mux)(nil)
+var _ ContentEditor = (*Mux)(nil)
 
 // NewMux 构造组合驱动。mounts 顺序决定虚拟根列表的展示顺序。
 func NewMux(mounts []Mount) *Mux {
@@ -46,13 +47,14 @@ func (m *Mux) Name() string { return "mux" }
 // Capabilities 取各挂载点能力的交集：只要有一个挂载点不支持某能力，
 // 对外就保守地声明为不支持（具体能力仍由各挂载点在操作时精确决定）。
 func (m *Mux) Capabilities() Caps {
-	caps := Caps{Write: true, Copy: true, Upload: true, DiskUsage: true}
+	caps := Caps{Write: true, Copy: true, Upload: true, DiskUsage: true, Edit: true}
 	for _, mt := range m.mounts {
 		c := mt.Backend.Capabilities()
 		caps.Write = caps.Write && c.Write
 		caps.Copy = caps.Copy && c.Copy
 		caps.Upload = caps.Upload && c.Upload
 		caps.DiskUsage = caps.DiskUsage && c.DiskUsage
+		caps.Edit = caps.Edit && c.Edit
 	}
 	return caps
 }
@@ -229,6 +231,50 @@ func (m *Mux) Usage(ctx context.Context, p string) (total, free uint64, err erro
 		return 0, 0, ErrNotSupported
 	}
 	return u.Usage(ctx, rel)
+}
+
+// ReadText 路由到命中挂载点并委托其 ContentEditor.ReadText（storage.ContentEditor）。
+// 返回结果的 Path 改写回虚拟命名空间。虚拟根 / 不支持的后端返回 ErrNotSupported。
+func (m *Mux) ReadText(ctx context.Context, p string, maxBytes int64) (*model.FileContentResult, error) {
+	name, b, rel, err := m.route(p)
+	if err != nil {
+		return nil, err
+	}
+	if b == nil {
+		return nil, ErrNotFile // 虚拟根不是文件
+	}
+	ed, ok := b.(ContentEditor)
+	if !ok {
+		return nil, ErrNotSupported
+	}
+	res, err := ed.ReadText(ctx, rel, maxBytes)
+	if err != nil {
+		return nil, err
+	}
+	res.Path = joinVirtual(name, res.Path)
+	return res, nil
+}
+
+// WriteText 路由到命中挂载点并委托其 ContentEditor.WriteText（storage.ContentEditor）。
+// 返回结果的 Path 改写回虚拟命名空间。虚拟根 / 不支持的后端返回 ErrNotSupported。
+func (m *Mux) WriteText(ctx context.Context, p string, content []byte, expected model.FileRevision, force bool) (*model.SaveContentResult, error) {
+	name, b, rel, err := m.route(p)
+	if err != nil {
+		return nil, err
+	}
+	if b == nil || rel == "/" {
+		return nil, ErrNotFile
+	}
+	ed, ok := b.(ContentEditor)
+	if !ok {
+		return nil, ErrNotSupported
+	}
+	res, err := ed.WriteText(ctx, rel, content, expected, force)
+	if err != nil {
+		return nil, err
+	}
+	res.Path = joinVirtual(name, res.Path)
+	return res, nil
 }
 
 // Walk 在虚拟根时遍历所有挂载点（relPath 以挂载点名为前缀）；在挂载点子树时

@@ -36,7 +36,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 	r.Use(mw.SecurityHeaders)
 
 	authHandler := handler.NewAuthHandler(d.Auth, d.Config.SessionTTL)
-	systemHandler := handler.NewSystemHandler(d.Files)
+	systemHandler := handler.NewSystemHandler()
 	fileHandler := handler.NewFileHandler(d.Files, d.Uploads, d.Logger)
 	bookmarkHandler := handler.NewBookmarkHandler(d.Bookmarks, d.Logger)
 
@@ -67,6 +67,10 @@ func NewRouter(d Deps) (http.Handler, error) {
 			protected.Get("/fs/preview", fileHandler.Preview)
 			protected.Get("/fs/download", fileHandler.Download)
 
+			// 文本编辑读取与路径级容量（只读，仅受全局限流）。
+			protected.Get("/fs/content", fileHandler.Content)
+			protected.Get("/fs/space", fileHandler.Space)
+
 			// Phase 5 打包下载（只读型重操作，流式 zip；仅受全局限流，不套写限流）。
 			protected.Post("/fs/archive", fileHandler.Archive)
 
@@ -82,6 +86,8 @@ func NewRouter(d Deps) (http.Handler, error) {
 				wr.Delete("/fs/delete", fileHandler.Delete)
 				// Phase 3 复制（写操作）。
 				wr.Post("/fs/copy", fileHandler.Copy)
+				// 文本保存（写操作，乐观锁）。
+				wr.Put("/fs/content", fileHandler.SaveContent)
 				// Phase 4 上传 init / complete（写操作；分片本身见下方，走全局限流）。
 				wr.Post("/fs/upload/init", fileHandler.UploadInit)
 				wr.Post("/fs/upload/complete", fileHandler.UploadComplete)

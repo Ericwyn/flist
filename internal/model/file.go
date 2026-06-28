@@ -58,7 +58,7 @@ type SearchHit struct {
 // SearchResult 是搜索接口的返回体。
 type SearchResult struct {
 	Query     string      `json:"query"`
-	Base      string      `json:"base"`      // 搜索起点 API 路径
+	Base      string      `json:"base"` // 搜索起点 API 路径
 	Items     []SearchHit `json:"items"`
 	Truncated bool        `json:"truncated"` // 命中达到上限被截断
 	TimedOut  bool        `json:"timed_out"` // 遍历超时提前结束
@@ -84,9 +84,87 @@ type UploadCompleteResult struct {
 	Missing []int  `json:"missing,omitempty"` // 缺片时返回，便于前端补传
 }
 
-// SystemInfo 是 GET /api/system/info 的返回体（Phase 6）。
+// SystemInfo 是 GET /api/system/info 的返回体。
+//
+// 自「文件编辑与路径级容量优化」起，磁盘容量字段移出本结构，统一由
+// GET /api/fs/space?path=... 按当前路径所在存储返回；本结构只承载系统级信息。
 type SystemInfo struct {
-	DiskTotal uint64 `json:"disk_total"` // 文件系统总容量（字节）
-	DiskUsed  uint64 `json:"disk_used"`  // 已用（total - free，字节）
-	DiskFree  uint64 `json:"disk_free"`  // 可用（字节）
+	OS         string    `json:"os"`          // 运行平台（runtime.GOOS）
+	Arch       string    `json:"arch"`        // 体系结构（runtime.GOARCH）
+	ServerTime time.Time `json:"server_time"` // 服务端当前时间
+}
+
+// FileRevision 是保存文本时用于乐观锁的不透明版本 token。
+// 前端不解析其生成规则，保存时原样带回。
+type FileRevision struct {
+	Token string `json:"token"`
+	Weak  bool   `json:"weak"` // 是否为弱校验（如基于 mtime/size 而非内容 hash）
+}
+
+// 文本行尾常量。
+const (
+	LineEndingLF    = "lf"
+	LineEndingCRLF  = "crlf"
+	LineEndingMixed = "mixed"
+	LineEndingNone  = "none"
+)
+
+// 文本编码常量（首期仅支持 UTF-8 / UTF-8 BOM）。
+const (
+	EncodingUTF8    = "utf-8"
+	EncodingUTF8BOM = "utf-8-bom"
+)
+
+// FileContentResult 是 GET /api/fs/content 的返回体（可编辑文本的完整内容）。
+type FileContentResult struct {
+	Path       string       `json:"path"`
+	Name       string       `json:"name"`
+	Size       int64        `json:"size"`
+	MIME       string       `json:"mime"`
+	Encoding   string       `json:"encoding"`
+	LineEnding string       `json:"line_ending"`
+	Content    string       `json:"content"`
+	ModTime    time.Time    `json:"mod_time"`
+	Revision   FileRevision `json:"revision"`
+	Editable   bool         `json:"editable"`
+	Readonly   bool         `json:"readonly"`
+}
+
+// SaveContentResult 是 PUT /api/fs/content 保存成功后的返回体。
+type SaveContentResult struct {
+	Path     string       `json:"path"`
+	Size     int64        `json:"size"`
+	ModTime  time.Time    `json:"mod_time"`
+	Revision FileRevision `json:"revision"`
+}
+
+// SaveConflict 是保存冲突（409）时返回的 data 体，告知前端当前最新版本。
+type SaveConflict struct {
+	Path            string       `json:"path"`
+	CurrentModTime  time.Time    `json:"current_mod_time"`
+	CurrentRevision FileRevision `json:"current_revision"`
+}
+
+// MountInfo 描述命中的存储挂载点（单挂载透明模式下 name 为驱动名、prefix 为 "/"）。
+type MountInfo struct {
+	Name   string `json:"name"`
+	Prefix string `json:"prefix"`
+}
+
+// SpaceUsage 是某路径所在存储的容量信息。supported=false 时其余字段无意义。
+type SpaceUsage struct {
+	Supported   bool    `json:"supported"`
+	Total       uint64  `json:"total,omitempty"`
+	Used        uint64  `json:"used,omitempty"`
+	Free        uint64  `json:"free,omitempty"`
+	Available   uint64  `json:"available,omitempty"`
+	UsedPercent float64 `json:"used_percent,omitempty"`
+}
+
+// SpaceResult 是 GET /api/fs/space 的返回体（当前路径所在存储的容量）。
+type SpaceResult struct {
+	Path     string     `json:"path"`
+	Mount    MountInfo  `json:"mount"`
+	Space    SpaceUsage `json:"space"`
+	Readonly bool       `json:"readonly"`
 }

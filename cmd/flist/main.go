@@ -81,9 +81,10 @@ func run(logger *slog.Logger, levelVar *slog.LevelVar) error {
 	if err != nil {
 		return err
 	}
-	fileSvc := service.NewFileService(backend)
+	fileLocker := util.NewPathLocker()
+	fileSvc := service.NewFileService(backend, fileLocker, cfg.MaxEdit)
 	bookmarkSvc := service.NewBookmarkService(st, backend)
-	uploadSvc := service.NewUploadService(backend, util.NewPathLocker(), cfg.MaxUpload)
+	uploadSvc := service.NewUploadService(backend, fileLocker, cfg.MaxUpload)
 
 	created, genPass, err := authSvc.EnsureAdmin("admin", "")
 	if err != nil {

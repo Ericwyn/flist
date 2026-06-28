@@ -43,8 +43,9 @@ func newUploadTestServer(t *testing.T, maxUpload int64) (http.Handler, string, s
 		t.Fatal(err)
 	}
 	backend := local.New(rootReal, t.TempDir())
-	files := service.NewFileService(backend)
-	uploads := service.NewUploadService(backend, util.NewPathLocker(), maxUpload)
+	locker := util.NewPathLocker()
+	files := service.NewFileService(backend, locker, 5<<20)
+	uploads := service.NewUploadService(backend, locker, maxUpload)
 
 	router, err := NewRouter(Deps{
 		Config:  &config.Config{SessionTTL: time.Hour},

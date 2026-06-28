@@ -14,6 +14,10 @@ interface FsState {
   loading: boolean;
   error: string | null;
 
+  // spaceVersion 在每次成功 navigate（含写操作后的 refresh）时自增，
+  // 供侧边栏路径级容量展示感知「目录切换 / 写操作完成」并重新拉取。
+  spaceVersion: number;
+
   sort: SortKey;
   order: SortOrder;
   showHidden: boolean;
@@ -156,6 +160,7 @@ export const useFsStore = create<FsState>((set, get) => ({
   total: 0,
   loading: false,
   error: null,
+  spaceVersion: 0,
   sort: 'name',
   order: 'asc',
   showHidden: false,
@@ -228,6 +233,7 @@ export const useFsStore = create<FsState>((set, get) => ({
           entries: res.items,
           total: res.total,
           loading: false,
+          spaceVersion: state.spaceVersion + 1,
           history,
           historyIndex,
         };

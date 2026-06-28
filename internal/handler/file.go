@@ -61,6 +61,14 @@ func failFileErr(w http.ResponseWriter, err error) {
 		Fail(w, http.StatusNotFound, CodeUploadNotFound, "upload_not_found")
 	case errors.Is(err, service.ErrUploadIncomplete):
 		Fail(w, http.StatusBadRequest, CodeUploadIncomplete, "upload_incomplete")
+	case errors.Is(err, storage.ErrUnsupportedMedia):
+		Fail(w, http.StatusUnsupportedMediaType, CodeUnsupportedMedia, "unsupported_media_type")
+	case errors.Is(err, storage.ErrFileTooLarge):
+		Fail(w, http.StatusRequestEntityTooLarge, CodeFileTooLarge, "file_too_large")
+	case errors.Is(err, storage.ErrReadonly):
+		Fail(w, http.StatusForbidden, CodeReadonlyStorage, "readonly_storage")
+	case errors.Is(err, storage.ErrInvalidRev):
+		Fail(w, http.StatusBadRequest, CodeInvalidRevision, "invalid_revision")
 	case errors.Is(err, storage.ErrNotSupported):
 		Fail(w, http.StatusBadRequest, CodeBadRequest, "not_supported")
 	case errors.Is(err, storage.ErrBadOp):
@@ -522,6 +530,86 @@ func (h *FileHandler) UploadComplete(w http.ResponseWriter, r *http.Request) {
 		slog.String("request_id", middleware.RequestIDFromContext(r.Context())),
 	)
 	h.audit(r, "upload", res.Path, "ok")
+	OK(w, res)
+}
+
+// Content 处理 GET /api/fs/content：完整读取可编辑文本及保存所需 revision。
+func (h *FileHandler) Content(w http.ResponseWriter, r *http.Request) {
+	apiPath := r.URL.Query().Get("path")
+	if apiPath == "" {
+		failBadRequest(w, "path required")
+		return
+	}
+	res, err := h.files.ReadContent(r.Context(), apiPath)
+	if err != nil {
+		failFileErr(w, err)
+		return
+	}
+	OK(w, res)
+}
+
+type saveContentRequest struct {
+	Path             string `json:"path"`
+	Content          string `json:"content"`
+	ExpectedRevision string `json:"expected_revision"`
+	Encoding         string `json:"encoding"`
+	LineEnding       string `json:"line_ending"`
+	Force            bool   `json:"force"`
+}
+
+// SaveContent 处理 PUT /api/fs/content：以乐观锁保存文本。
+//
+// revision 冲突返回 409，并在 data 中带回当前最新 revision 供前端处理（重载 / 强制覆盖）。
+// content 原样保存，不依据 encoding / line_ending 做转换（见 spec）。
+func (h *FileHandler) SaveContent(w http.ResponseWriter, r *http.Request) {
+	var req saveContentRequest
+	if err := decodeJSON(w, r, &req); err != nil || strings.TrimSpace(req.Path) == "" {
+		failBadRequest(w, "path required")
+		return
+	}
+
+	expected := model.FileRevision{Token: req.ExpectedRevision}
+	res, err := h.files.SaveContent(r.Context(), req.Path, []byte(req.Content), expected, req.Force)
+	if err != nil {
+		// 冲突：附带当前最新 revision，便于前端决策。
+		if errors.Is(err, storage.ErrFileModified) {
+			h.audit(r, "edit_conflict", req.Path, "fail")
+			data := h.conflictData(r, req.Path)
+			WriteJSON(w, http.StatusConflict, Envelope{
+				Code: CodeFileModified, Message: "file_modified", Data: data,
+			})
+			return
+		}
+		h.audit(r, "edit", req.Path, "fail")
+		failFileErr(w, err)
+		return
+	}
+	h.audit(r, "edit", res.Path, "ok")
+	OK(w, res)
+}
+
+// conflictData 重新读取当前文件以组装冲突响应体；读取失败时退化为只含 path。
+func (h *FileHandler) conflictData(r *http.Request, apiPath string) model.SaveConflict {
+	data := model.SaveConflict{Path: apiPath}
+	if cur, err := h.files.ReadContent(r.Context(), apiPath); err == nil {
+		data.Path = cur.Path
+		data.CurrentModTime = cur.ModTime
+		data.CurrentRevision = cur.Revision
+	}
+	return data
+}
+
+// Space 处理 GET /api/fs/space：返回当前路径所在存储的容量信息。
+func (h *FileHandler) Space(w http.ResponseWriter, r *http.Request) {
+	apiPath := r.URL.Query().Get("path")
+	if apiPath == "" {
+		apiPath = "/"
+	}
+	res, err := h.files.Space(r.Context(), apiPath)
+	if err != nil {
+		failFileErr(w, err)
+		return
+	}
 	OK(w, res)
 }
 

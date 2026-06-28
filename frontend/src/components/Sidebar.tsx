@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { HardDrive, Home, Settings, StarOff, Pencil, Trash2, Plus, GripVertical, AlertTriangle } from 'lucide-react';
 import { useFsStore } from '../fsStore';
 import { useAuthStore } from '../authStore';
@@ -9,16 +9,18 @@ import { SettingsModal } from './SettingsModal';
 import { InputModal } from './InputModal';
 import { ConfirmModal } from './ConfirmModal';
 import { ContextMenu, MenuItem } from './ContextMenu';
-import { Bookmark, DiskInfo } from '../types';
+import { Bookmark, SpaceInfo } from '../types';
 
 export function Sidebar() {
-  const { currentPath, navigate } = useFsStore();
+  const { currentPath, navigate, spaceVersion } = useFsStore();
   const { user } = useAuthStore();
   const { items, load, add, rename, remove, reorder } = useBookmarkStore();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-  // 磁盘用量（Phase 6），登录后加载。
-  const [disk, setDisk] = useState<DiskInfo | null>(null);
+  // 路径级容量：随当前目录与写操作（spaceVersion）刷新。
+  const [space, setSpace] = useState<SpaceInfo | null>(null);
+  // 容量短缓存：记录上次成功查询的时间与对应 spaceVersion，避免快速切目录频繁请求。
+  const spaceCacheRef = useRef<{ at: number; version: number }>({ at: 0, version: -1 });
 
   // 收藏夹相关弹窗 / 菜单状态。
   const [renameTarget, setRenameTarget] = useState<Bookmark | null>(null);
@@ -35,13 +37,34 @@ export function Sidebar() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 登录后加载磁盘用量（驱动不支持时静默忽略，不展示）。
+  // 路径级容量：随当前目录与写操作（spaceVersion）刷新。
+  // 加 5 秒短缓存 + 请求合并，避免快速切目录时频繁查询；驱动不支持或失败时静默隐藏。
   useEffect(() => {
-    api.system
-      .info()
-      .then(setDisk)
-      .catch(() => setDisk(null));
-  }, []);
+    let cancelled = false;
+    const now = Date.now();
+    if (
+      space &&
+      space.path === currentPath &&
+      now - spaceCacheRef.current.at < 5000 &&
+      spaceCacheRef.current.version === spaceVersion
+    ) {
+      return; // 命中短缓存，跳过查询
+    }
+    api.fs
+      .space(currentPath)
+      .then((res) => {
+        if (cancelled) return;
+        spaceCacheRef.current = { at: Date.now(), version: spaceVersion };
+        setSpace(res);
+      })
+      .catch(() => {
+        if (!cancelled) setSpace(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPath, spaceVersion]);
 
   // 当前目录是否已收藏（用于「收藏当前目录」按钮状态）。
   const currentBookmarked = items.some((b) => b.path === currentPath);
@@ -185,34 +208,41 @@ export function Sidebar() {
         </section>
       </div>
 
-      {/* 磁盘用量（Phase 6）：常驻底部状态栏，不随收藏夹滚动。 */}
-      {disk && disk.total > 0 && (
-        <div className="px-3 py-2.5 border-t border-slate-200 dark:border-slate-800">
-          <div className="flex items-center text-slate-600 dark:text-slate-400 mb-1.5">
-            <HardDrive className="w-3.5 h-3.5 mr-2 shrink-0 opacity-80" />
-            <span className="text-[11px] truncate">
-              {formatBytes(disk.total)}
-            </span>
-            <span className="text-[11px] text-slate-400 dark:text-slate-600 ml-auto pl-2 shrink-0">
-              剩余 {formatBytes(disk.free)}
-            </span>
-          </div>
-          <div
-            className="h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden cursor-help"
-            title={`已用 ${formatBytes(disk.used)}（${Math.round((disk.used / disk.total) * 100)}%）`}
-          >
+      {/* 路径级容量：常驻底部状态栏，随当前目录刷新；驱动不支持或不可用时隐藏。 */}
+      {space && space.space.supported && (space.space.total ?? 0) > 0 && (() => {
+        const s = space.space;
+        const total = s.total ?? 0;
+        const used = s.used ?? 0;
+        const free = s.free ?? 0;
+        const pct = total > 0 ? Math.round((used / total) * 100) : 0;
+        return (
+          <div className="px-3 py-2.5 border-t border-slate-200 dark:border-slate-800">
+            <div className="flex items-center text-slate-600 dark:text-slate-400 mb-1.5">
+              <HardDrive className="w-3.5 h-3.5 mr-2 shrink-0 opacity-80" />
+              <span className="text-[11px] truncate" title={`当前位置所在存储：${space.mount.name || '本地'}`}>
+                {formatBytes(total)}
+              </span>
+              <span className="text-[11px] text-slate-400 dark:text-slate-600 ml-auto pl-2 shrink-0">
+                剩余 {formatBytes(free)}
+              </span>
+            </div>
             <div
-              className={cn(
-                'h-full rounded-full transition-all duration-300',
-                disk.used / disk.total >= 0.9
-                  ? 'bg-rose-500 dark:bg-rose-400'
-                  : 'bg-blue-600 dark:bg-blue-400',
-              )}
-              style={{ width: `${Math.min(100, Math.round((disk.used / disk.total) * 100))}%` }}
-            />
+              className="h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden cursor-help"
+              title={`已用 ${formatBytes(used)}（${pct}%）· 当前目录所在存储`}
+            >
+              <div
+                className={cn(
+                  'h-full rounded-full transition-all duration-300',
+                  pct >= 90
+                    ? 'bg-rose-500 dark:bg-rose-400'
+                    : 'bg-blue-600 dark:bg-blue-400',
+                )}
+                style={{ width: `${Math.min(100, pct)}%` }}
+              />
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       <div className="px-3 py-3 border-t border-slate-200 dark:border-slate-800">
         <button

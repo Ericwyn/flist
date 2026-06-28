@@ -22,6 +22,11 @@ const (
 	CodeUploadTooLarge     = 2009
 	CodeUploadNotFound     = 2010
 	CodeUploadIncomplete   = 2011
+	CodeFileModified       = 2012
+	CodeUnsupportedMedia   = 2013
+	CodeFileTooLarge       = 2014
+	CodeReadonlyStorage    = 2015
+	CodeInvalidRevision    = 2016
 	CodeBookmarkExists     = 3001
 	CodeBookmarkNotFound   = 3002
 	CodeBadRequest         = 4000

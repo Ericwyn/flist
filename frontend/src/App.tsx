@@ -5,6 +5,7 @@ import { FileBrowser } from './components/FileBrowser';
 import { PreviewModal } from './components/PreviewModal';
 import { LoginPage } from './components/LoginPage';
 import { TransferPanel } from './components/TransferPanel';
+import { Editor } from './components/Editor';
 import { useStore } from './store';
 import { useAuthStore } from './authStore';
 
@@ -36,6 +37,12 @@ export default function App() {
 
   if (status === 'unauthenticated') {
     return <LoginPage />;
+  }
+
+  // 编辑器独立页面：/editor?path=...（支持新窗口打开，同源复用登录态）。
+  // 与文件浏览主界面互斥渲染，避免侧边栏 / 浏览器列表抢占整屏。
+  if (window.location.pathname === '/editor') {
+    return <Editor />;
   }
 
   return (

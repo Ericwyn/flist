@@ -41,7 +41,7 @@ func newPhase3TestServer(t *testing.T) (http.Handler, string, string) {
 		t.Fatal(err)
 	}
 	backend := local.New(rootReal, t.TempDir())
-	files := service.NewFileService(backend)
+	files := service.NewFileService(backend, util.NewPathLocker(), 5<<20)
 	bookmarks := service.NewBookmarkService(st, backend)
 
 	router, err := NewRouter(Deps{

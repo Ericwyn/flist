@@ -2,7 +2,7 @@
 import {
   FileEntry, ListResult, PreviewResult, ListOptions,
   OpResult, SearchResult, SearchHit, SearchOptions, Bookmark,
-  UploadInitResult, DiskInfo,
+  UploadInitResult, FileContent, SaveContentResult, SpaceInfo, FileRevision,
 } from '../types';
 import { parentPath, joinPath } from './path';
 
@@ -38,11 +38,14 @@ export function clearToken(): void {
 }
 
 // ApiError 携带业务错误码，便于上层按 code 区分处理。
+// data 透传错误响应体里的 data 字段（如保存冲突 2012 的当前最新 revision）。
 export class ApiError extends Error {
   code: number;
-  constructor(code: number, message: string) {
+  data?: unknown;
+  constructor(code: number, message: string, data?: unknown) {
     super(message);
     this.code = code;
+    this.data = data;
     this.name = 'ApiError';
   }
 }
@@ -79,7 +82,7 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   }
 
   if (env.code !== 0) {
-    throw new ApiError(env.code, env.message || '请求失败');
+    throw new ApiError(env.code, env.message || '请求失败', env.data);
   }
   return env.data;
 }
@@ -354,6 +357,63 @@ export const api = {
       });
       return raw.path;
     },
+
+    // content 完整读取可编辑文本及保存所需 revision。
+    async content(path: string): Promise<FileContent> {
+      const raw = await request<RawFileContent>(
+        `/api/fs/content?path=${encodeURIComponent(path)}`,
+      );
+      return mapContent(raw);
+    },
+
+    // saveContent 以乐观锁保存文本。冲突（2012）由 ApiError 抛出，data 见 SaveConflict。
+    // content 原样提交，服务端不做行尾转换。
+    async saveContent(req: {
+      path: string;
+      content: string;
+      expectedRevision?: string;
+      encoding?: string;
+      lineEnding?: string;
+      force?: boolean;
+    }): Promise<SaveContentResult> {
+      const raw = await request<RawSaveContent>('/api/fs/content', {
+        method: 'PUT',
+        body: {
+          path: req.path,
+          content: req.content,
+          expected_revision: req.expectedRevision ?? '',
+          encoding: req.encoding ?? 'utf-8',
+          line_ending: req.lineEnding ?? 'lf',
+          force: req.force ?? false,
+        },
+      });
+      return {
+        path: raw.path,
+        size: raw.size,
+        modTime: raw.mod_time,
+        revision: raw.revision,
+      };
+    },
+
+    // space 获取指定路径所在存储的容量信息（路径级容量）。
+    async space(path: string): Promise<SpaceInfo> {
+      const raw = await request<RawSpace>(
+        `/api/fs/space?path=${encodeURIComponent(path || '/')}`,
+      );
+      return {
+        path: raw.path,
+        mount: { name: raw.mount?.name ?? '', prefix: raw.mount?.prefix ?? '/' },
+        space: {
+          supported: raw.space.supported,
+          total: raw.space.total,
+          used: raw.space.used,
+          free: raw.space.free,
+          available: raw.space.available,
+          usedPercent: raw.space.used_percent,
+        },
+        readonly: raw.readonly,
+      };
+    },
   },
 
   bookmarks: {
@@ -395,17 +455,24 @@ export const api = {
   },
 
   system: {
-    // info 获取 root 所在文件系统的磁盘用量（Phase 6）。
-    async info(): Promise<DiskInfo> {
+    // info 获取纯系统级信息（os / arch / 服务端时间）。磁盘容量改用 fs.space。
+    async info(): Promise<SystemInfo> {
       const raw = await request<RawSystemInfo>('/api/system/info');
       return {
-        total: raw.disk_total,
-        used: raw.disk_used,
-        free: raw.disk_free,
+        os: raw.os,
+        arch: raw.arch,
+        serverTime: raw.server_time,
       };
     },
   },
 };
+
+// SystemInfo 是纯系统级信息（容量信息已移至 fs.space）。
+export interface SystemInfo {
+  os: string;
+  arch: string;
+  serverTime: string;
+}
 
 // parseContentDispositionFilename 从 Content-Disposition 头解析文件名，
 // 兼容 RFC 5987 的 filename*=UTF-8''<percent-encoded> 与普通 filename="..."。
@@ -528,7 +595,58 @@ function mapBookmark(r: RawBookmark): Bookmark {
 }
 
 interface RawSystemInfo {
-  disk_total: number;
-  disk_used: number;
-  disk_free: number;
+  os: string;
+  arch: string;
+  server_time: string;
+}
+
+interface RawFileContent {
+  path: string;
+  name: string;
+  size: number;
+  mime: string;
+  encoding: string;
+  line_ending: 'lf' | 'crlf' | 'mixed' | 'none';
+  content: string;
+  mod_time: string;
+  revision: FileRevision;
+  editable: boolean;
+  readonly: boolean;
+}
+
+function mapContent(r: RawFileContent): FileContent {
+  return {
+    path: r.path,
+    name: r.name,
+    size: r.size,
+    mime: r.mime,
+    encoding: r.encoding,
+    lineEnding: r.line_ending,
+    content: r.content,
+    modTime: r.mod_time,
+    revision: r.revision,
+    editable: r.editable,
+    readonly: r.readonly,
+  };
+}
+
+interface RawSaveContent {
+  path: string;
+  size: number;
+  mod_time: string;
+  revision: FileRevision;
+}
+
+interface RawSpace {
+  path: string;
+  mount: { name: string; prefix: string };
+  space: {
+    supported: boolean;
+    total?: number;
+    used?: number;
+    free?: number;
+    available?: number;
+    used_percent?: number;
+  };
+  readonly: boolean;
 }

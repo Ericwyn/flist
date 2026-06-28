@@ -18,6 +18,7 @@ type Config struct {
 	LongPath   bool          // Windows 长路径支持
 	CORSOrigin string        // 允许的 CORS 来源（dev 调试用），空表示不开启
 	MaxUpload  int64         // 单文件上传上限（字节），0 表示不限
+	MaxEdit    int64         // 单文件在线编辑大小上限（字节），超过则拒绝编辑
 	Debug      bool          // 调试日志（级别降到 Debug，输出上传分片等细节）
 	ResetAdmin bool          // 为 true 时重置 id=1 的管理员凭据后退出，不启动服务
 }
@@ -26,6 +27,7 @@ const (
 	defaultAddr       = ":16550"
 	defaultData       = "./data"
 	defaultSessionTTL = 24 * time.Hour
+	defaultMaxEdit    = 5 << 20 // 5 MiB：单文件在线编辑大小上限
 )
 
 // envOr 返回环境变量值，缺失或为空时返回 fallback。
@@ -65,6 +67,15 @@ func Load(args []string) (*Config, error) {
 		maxUploadDefault = n
 	}
 
+	maxEditDefault := int64(defaultMaxEdit)
+	if v := envOr("FLIST_MAX_EDIT_SIZE", ""); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("invalid FLIST_MAX_EDIT_SIZE %q: 须为正整数字节数", v)
+		}
+		maxEditDefault = n
+	}
+
 	addr := fs.String("addr", envOr("FLIST_ADDR", defaultAddr), "HTTP 监听地址")
 	root := fs.String("root", envOr("FLIST_ROOT", ""), "允许管理的根目录（必填）")
 	data := fs.String("data", envOr("FLIST_DATA", defaultData), "数据目录（SQLite 等）")
@@ -72,6 +83,7 @@ func Load(args []string) (*Config, error) {
 	longPath := fs.Bool("long-path", longPathDefault, "启用 Windows 长路径支持（仅 Windows 有效）")
 	corsOrigin := fs.String("cors-origin", envOr("FLIST_CORS_ORIGIN", ""), "允许的 CORS 来源（前后端分离调试用），空表示关闭")
 	maxUpload := fs.Int64("max-upload", maxUploadDefault, "单文件上传上限（字节），0 表示不限")
+	maxEdit := fs.Int64("max-edit-size", maxEditDefault, "单文件在线编辑大小上限（字节），超过则拒绝编辑")
 	debug := fs.Bool("debug", envOr("FLIST_DEBUG", "") == "true", "调试日志：级别降到 Debug，输出上传分片(index/received/total_chunks)等细节")
 	resetAdmin := fs.Bool("reset-admin", false, "重置管理员（id=1）的用户名和密码为 admin + 随机密码后退出，不启动服务。登录后可在设置中修改。")
 
@@ -81,6 +93,9 @@ func Load(args []string) (*Config, error) {
 
 	if *maxUpload < 0 {
 		return nil, fmt.Errorf("--max-upload 不能为负数")
+	}
+	if *maxEdit <= 0 {
+		return nil, fmt.Errorf("--max-edit-size 必须为正整数字节数")
 	}
 
 	// --reset-admin 模式只需要访问数据库，不需要 root。
@@ -96,6 +111,7 @@ func Load(args []string) (*Config, error) {
 		LongPath:   *longPath,
 		CORSOrigin: *corsOrigin,
 		MaxUpload:  *maxUpload,
+		MaxEdit:    *maxEdit,
 		Debug:      *debug,
 		ResetAdmin: *resetAdmin,
 	}

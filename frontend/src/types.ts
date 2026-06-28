@@ -84,11 +84,55 @@ export interface Bookmark {
   valid: boolean; // 目标仍存在且为目录
 }
 
-// 磁盘用量信息，对应后端 model.SystemInfo（Phase 6）。
-export interface DiskInfo {
-  total: number; // 文件系统总容量（字节）
-  used: number; // 已用（字节）
-  free: number; // 可用（字节）
+// 文本保存乐观锁的不透明版本 token，对应后端 model.FileRevision。
+export interface FileRevision {
+  token: string;
+  weak: boolean;
+}
+
+// 可编辑文本的完整内容，对应后端 model.FileContentResult。
+export interface FileContent {
+  path: string;
+  name: string;
+  size: number;
+  mime: string;
+  encoding: string;
+  lineEnding: 'lf' | 'crlf' | 'mixed' | 'none';
+  content: string;
+  modTime: string;
+  revision: FileRevision;
+  editable: boolean;
+  readonly: boolean;
+}
+
+// 保存成功返回，对应后端 model.SaveContentResult。
+export interface SaveContentResult {
+  path: string;
+  size: number;
+  modTime: string;
+  revision: FileRevision;
+}
+
+// 保存冲突（409）返回的 data 体，对应后端 model.SaveConflict。
+export interface SaveConflict {
+  path: string;
+  currentModTime: string;
+  currentRevision: FileRevision;
+}
+
+// 路径级容量，对应后端 model.SpaceResult。
+export interface SpaceInfo {
+  path: string;
+  mount: { name: string; prefix: string };
+  space: {
+    supported: boolean;
+    total?: number;
+    used?: number;
+    free?: number;
+    available?: number;
+    usedPercent?: number;
+  };
+  readonly: boolean;
 }
 
 // 剪贴板状态：复制 / 剪切两态，承载待粘贴的路径集合。

@@ -39,16 +39,17 @@ func New(rootReal, stagingDir string) *Local {
 
 // 确保 Local 实现了核心接口与可选接口。
 var (
-	_ storage.Backend  = (*Local)(nil)
-	_ storage.Walker   = (*Local)(nil)
-	_ storage.Usager   = (*Local)(nil)
-	_ storage.Uploader = (*Local)(nil)
+	_ storage.Backend       = (*Local)(nil)
+	_ storage.Walker        = (*Local)(nil)
+	_ storage.Usager        = (*Local)(nil)
+	_ storage.Uploader      = (*Local)(nil)
+	_ storage.ContentEditor = (*Local)(nil)
 )
 
 func (b *Local) Name() string { return "local" }
 
 func (b *Local) Capabilities() storage.Caps {
-	return storage.Caps{Write: true, Copy: true, Upload: true, DiskUsage: true}
+	return storage.Caps{Write: true, Copy: true, Upload: true, DiskUsage: true, Edit: true}
 }
 
 // mapErr 将底层 OS / util 错误归一化为 storage 错误词表。

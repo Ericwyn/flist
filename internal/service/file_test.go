@@ -22,7 +22,7 @@ func setupTestRoot(t *testing.T) (*FileService, string) {
 	if err != nil {
 		t.Fatalf("ResolveRoot: %v", err)
 	}
-	return NewFileService(local.New(real, t.TempDir())), real
+	return NewFileService(local.New(real, t.TempDir()), util.NewPathLocker(), 5<<20), real
 }
 
 func writeFile(t *testing.T, root, rel, content string) {

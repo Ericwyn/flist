@@ -34,6 +34,13 @@ var (
 	ErrNotDir       = errors.New("not a directory")         // 2008
 	ErrBadOp        = errors.New("invalid operation")       // 4000
 	ErrNotSupported = errors.New("operation not supported") // 由 Caps 决定，映射 4000
+
+	// 文本编辑相关（文件编辑与路径级容量优化）。
+	ErrFileModified     = errors.New("file modified since read")  // 2012：保存时 revision 不匹配
+	ErrUnsupportedMedia = errors.New("not an editable text file") // 2013：非可编辑文本
+	ErrFileTooLarge     = errors.New("file too large to edit")    // 2014：超过可编辑大小上限
+	ErrReadonly         = errors.New("readonly storage")          // 2015：后端 / 文件只读
+	ErrInvalidRev       = errors.New("invalid revision")          // 2016：expected_revision 缺失或非法
 )
 
 // Caps 声明驱动支持的能力。service 据此对不支持的操作直接返回 ErrNotSupported，
@@ -43,6 +50,7 @@ type Caps struct {
 	Copy      bool // 复制（Phase 3）
 	Upload    bool // 分片上传（Phase 4，配合可选 Uploader 接口）
 	DiskUsage bool // 磁盘 / 配额用量（Phase 6，配合可选 Usager 接口）
+	Edit      bool // 文本读取 / 保存（配合可选 ContentEditor 接口）
 }
 
 // File 是可下载 / 预览的文件句柄。必须可随机读（Seek）以支撑 HTTP Range。
@@ -99,6 +107,23 @@ type Walker interface {
 // Usager 是可选接口：返回路径所在存储的容量与可用空间（Phase 6 / 上传预检）。
 type Usager interface {
 	Usage(ctx context.Context, p string) (total, free uint64, err error)
+}
+
+// ContentEditor 是可选接口：驱动提供「完整读取可编辑文本 + 乐观锁保存」的能力
+// （文件编辑与路径级容量优化）。与 Walker / Usager / Uploader 同构：service 用类型断言
+// 探测，驱动不支持时上层返回 ErrNotSupported。与 Caps.Edit 成对出现。
+//
+// 与 Open（下载 / 预览）的区别：ReadText 完整读取并返回保存所需的 revision、编码与行尾
+// 探测结果，且对非文本 / 超限文件显式拒绝；下载链路不感知这些编辑语义。
+type ContentEditor interface {
+	// ReadText 完整读取可编辑文本：解析路径、校验普通文件、大小上限（maxBytes>0 时生效）、
+	// 文本嗅探，读取全部内容并计算 revision。非文本返回 ErrUnsupportedMedia，
+	// 超限返回 ErrFileTooLarge。
+	ReadText(ctx context.Context, p string, maxBytes int64) (*model.FileContentResult, error)
+	// WriteText 以乐观锁保存文本：重新读取当前 revision，与 expected 不一致且 force=false 时
+	// 返回 ErrFileModified；通过后写同目录临时文件并原子替换，返回新 revision。
+	// content 原样写入，不做行尾 / 编码转换。
+	WriteText(ctx context.Context, p string, content []byte, expected model.FileRevision, force bool) (*model.SaveContentResult, error)
 }
 
 // Uploader 是可选接口：驱动提供分片上传的物理存取（暂存 / 合并 / 清理）。

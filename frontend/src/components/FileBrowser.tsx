@@ -293,6 +293,20 @@ export function FileBrowser() {
     a.remove();
   };
 
+  // editorUrl 构造编辑器页面 URL（/editor?path=...，token 仍在 localStorage，同源复用，不入 URL）。
+  const editorUrl = (entry: FileEntry) =>
+    `/editor?path=${encodeURIComponent(joinPath(currentPath, entry.name))}`;
+
+  // openEditor 在当前窗口打开编辑器（整页切换，App 按 pathname 渲染 Editor）。
+  const openEditor = (entry: FileEntry) => {
+    window.location.href = editorUrl(entry);
+  };
+
+  // openEditorNewWindow 在新窗口打开编辑器；noopener 防止新页面反向操作本窗口。
+  const openEditorNewWindow = (entry: FileEntry) => {
+    window.open(editorUrl(entry), '_blank', 'noopener');
+  };
+
   const showProps = (entry: FileEntry) => {
     setPropsTarget({ path: joinPath(currentPath, entry.name), entry });
   };
@@ -472,14 +486,25 @@ export function FileBrowser() {
         { label: '属性', icon: <Info className="w-4 h-4" />, onClick: () => showProps(entry) },
       ];
     }
-    return [
+    const fileItems: MenuItem[] = [
       { label: '打开预览', icon: <ExternalLink className="w-4 h-4" />, onClick: () => openEntry(entry) },
+    ];
+    // 文本 / 未知类型提供编辑入口（媒体二进制不展示）。
+    const fileKind = kindOf(entry);
+    if (fileKind === 'text' || fileKind === 'unknown') {
+      fileItems.push(
+        { label: '编辑', icon: <Pencil className="w-4 h-4" />, onClick: () => openEditor(entry) },
+        { label: '新窗口编辑', icon: <ExternalLink className="w-4 h-4" />, onClick: () => openEditorNewWindow(entry) },
+      );
+    }
+    fileItems.push(
       { label: '下载', icon: <Download className="w-4 h-4" />, onClick: () => doDownload(entry) },
       ...clip,
       { label: '重命名', icon: <Pencil className="w-4 h-4" />, onClick: () => setDialog({ kind: 'rename', entry }) },
       { label: '删除', icon: <Trash2 className="w-4 h-4" />, danger: true, onClick: () => setDialog({ kind: 'delete', entries: [entry] }) },
       { label: '属性', icon: <Info className="w-4 h-4" />, onClick: () => showProps(entry) },
-    ];
+    );
+    return fileItems;
   };
 
   // doBookmarkEntry 收藏选中的子目录。
