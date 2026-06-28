@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"time"
 
 	"flist/internal/model"
 )
@@ -98,6 +99,31 @@ type Walker interface {
 // Usager 是可选接口：返回路径所在存储的容量与可用空间（Phase 6 / 上传预检）。
 type Usager interface {
 	Usage(ctx context.Context, p string) (total, free uint64, err error)
+}
+
+// Uploader 是可选接口：驱动提供分片上传的物理存取（暂存 / 合并 / 清理）。
+//
+// 会话元数据（已收分片集合、文件指纹、user 归属、过期时间）由 service 的 UploadService
+// 在内存维护；驱动只负责按 uploadID 把分片字节落盘，并在 complete 时按序拼接到目标。
+// uploadID 由 service 生成的高熵随机 token，驱动可安全地用作暂存目录名（无路径注入）。
+//
+// 与 Walker / Usager 同构：service 用类型断言探测，驱动不支持时上层返回 ErrNotSupported。
+type Uploader interface {
+	// StageChunk 将 uploadID 的第 index 个分片写入暂存区（先写临时文件再 rename，
+	// 同 index 重传幂等覆盖）。返回写入字节数。暂存目录惰性创建。
+	StageChunk(ctx context.Context, uploadID string, index int, r io.Reader) (int64, error)
+	// MergeUpload 按序拼接 uploadID 的 [0, totalChunks) 分片到 dst，成功后删除暂存区。
+	// dst 为相对该后端根的 API 路径，驱动负责 SafeResolve + 文件名校验 + 父目录存在性。
+	// overwrite=false 且 dst 已存在 → ErrExists；overwrite=true 则原子替换
+	//（先写同目录临时文件再 rename，避免合并中途损坏既有文件）。
+	MergeUpload(ctx context.Context, uploadID, dst string, totalChunks int, overwrite bool) error
+	// AbortChunk 删除某次上传中单个分片的暂存文件（幂等）。用于分片大小校验失败时
+	// 清掉写坏的分片，便于后续重传纠正。
+	AbortChunk(uploadID string, index int) error
+	// AbortUpload 删除 uploadID 的暂存区（幂等，不存在不报错）。
+	AbortUpload(uploadID string) error
+	// SweepStaging 删除最后修改时间早于 now-maxAge 的孤儿暂存目录，返回清理数量。
+	SweepStaging(maxAge time.Duration) (int, error)
 }
 
 // ErrStopWalk 是 Walk 回调用于提前结束遍历的哨兵错误（命中上限 / 超时），

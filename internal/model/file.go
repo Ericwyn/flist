@@ -63,3 +63,23 @@ type SearchResult struct {
 	Truncated bool        `json:"truncated"` // 命中达到上限被截断
 	TimedOut  bool        `json:"timed_out"` // 遍历超时提前结束
 }
+
+// UploadInitResult 是分片上传初始化接口的返回体。
+type UploadInitResult struct {
+	UploadID    string `json:"upload_id"`
+	ChunkSize   int64  `json:"chunk_size"`   // 服务端最终采用的分片大小（可能被归一）
+	TotalChunks int    `json:"total_chunks"` // 总分片数
+	Received    []int  `json:"received"`     // 已收分片索引（续传时非空，新会话为 []）
+}
+
+// UploadChunkResult 是分片上传接口的返回体。
+type UploadChunkResult struct {
+	Index    int `json:"index"`    // 本次确认落盘的分片索引
+	Received int `json:"received"` // 已收分片总数（进度参考）
+}
+
+// UploadCompleteResult 是合并完成接口的返回体。
+type UploadCompleteResult struct {
+	Path    string `json:"path"`              // 落盘后的 API 路径
+	Missing []int  `json:"missing,omitempty"` // 缺片时返回，便于前端补传
+}

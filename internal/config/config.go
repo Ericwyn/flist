@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/spf13/pflag"
@@ -16,6 +17,8 @@ type Config struct {
 	SessionTTL time.Duration // 会话有效期
 	LongPath   bool          // Windows 长路径支持
 	CORSOrigin string        // 允许的 CORS 来源（dev 调试用），空表示不开启
+	MaxUpload  int64         // 单文件上传上限（字节），0 表示不限
+	Debug      bool          // 调试日志（级别降到 Debug，输出上传分片等细节）
 	ResetAdmin bool          // 为 true 时重置 id=1 的管理员凭据后退出，不启动服务
 }
 
@@ -53,16 +56,31 @@ func Load(args []string) (*Config, error) {
 
 	longPathDefault := envOr("FLIST_LONG_PATH", "") == "true"
 
+	var maxUploadDefault int64
+	if v := envOr("FLIST_MAX_UPLOAD", ""); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("invalid FLIST_MAX_UPLOAD %q: 须为非负整数字节数", v)
+		}
+		maxUploadDefault = n
+	}
+
 	addr := fs.String("addr", envOr("FLIST_ADDR", defaultAddr), "HTTP 监听地址")
 	root := fs.String("root", envOr("FLIST_ROOT", ""), "允许管理的根目录（必填）")
 	data := fs.String("data", envOr("FLIST_DATA", defaultData), "数据目录（SQLite 等）")
 	sessionTTL := fs.Duration("session-ttl", sessionTTLDefault, "会话有效期")
 	longPath := fs.Bool("long-path", longPathDefault, "启用 Windows 长路径支持（仅 Windows 有效）")
 	corsOrigin := fs.String("cors-origin", envOr("FLIST_CORS_ORIGIN", ""), "允许的 CORS 来源（前后端分离调试用），空表示关闭")
+	maxUpload := fs.Int64("max-upload", maxUploadDefault, "单文件上传上限（字节），0 表示不限")
+	debug := fs.Bool("debug", envOr("FLIST_DEBUG", "") == "true", "调试日志：级别降到 Debug，输出上传分片(index/received/total_chunks)等细节")
 	resetAdmin := fs.Bool("reset-admin", false, "重置管理员（id=1）的用户名和密码为 admin + 随机密码后退出，不启动服务。登录后可在设置中修改。")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
+	}
+
+	if *maxUpload < 0 {
+		return nil, fmt.Errorf("--max-upload 不能为负数")
 	}
 
 	// --reset-admin 模式只需要访问数据库，不需要 root。
@@ -77,6 +95,8 @@ func Load(args []string) (*Config, error) {
 		SessionTTL: *sessionTTL,
 		LongPath:   *longPath,
 		CORSOrigin: *corsOrigin,
+		MaxUpload:  *maxUpload,
+		Debug:      *debug,
 		ResetAdmin: *resetAdmin,
 	}
 	return cfg, nil

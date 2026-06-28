@@ -13,7 +13,7 @@ func TestLocalUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveRoot: %v", err)
 	}
-	b := New(real)
+	b := New(real, t.TempDir())
 
 	total, free, err := b.Usage(context.Background(), "/")
 	if err != nil {
@@ -29,7 +29,7 @@ func TestLocalUsage_Traversal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveRoot: %v", err)
 	}
-	b := New(real)
+	b := New(real, t.TempDir())
 
 	// 越界路径会被 SafeResolve 钳制回 root 内，仍返回 root 所在文件系统用量（不报错）。
 	if _, _, err := b.Usage(context.Background(), "/../../.."); err != nil {

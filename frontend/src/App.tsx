@@ -4,6 +4,7 @@ import { Sidebar } from './components/Sidebar';
 import { FileBrowser } from './components/FileBrowser';
 import { PreviewModal } from './components/PreviewModal';
 import { LoginPage } from './components/LoginPage';
+import { UploadPanel } from './components/UploadPanel';
 import { useStore } from './store';
 import { useAuthStore } from './authStore';
 
@@ -42,6 +43,7 @@ export default function App() {
       <Sidebar />
       <FileBrowser />
       <PreviewModal />
+      <UploadPanel />
     </div>
   );
 }

@@ -40,7 +40,7 @@ func newPhase3TestServer(t *testing.T) (http.Handler, string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	backend := local.New(rootReal)
+	backend := local.New(rootReal, t.TempDir())
 	files := service.NewFileService(backend)
 	bookmarks := service.NewBookmarkService(st, backend)
 

@@ -19,6 +19,9 @@ const (
 	CodeNameInvalid        = 2006
 	CodeNotAFile           = 2007
 	CodeNotADir            = 2008
+	CodeUploadTooLarge     = 2009
+	CodeUploadNotFound     = 2010
+	CodeUploadIncomplete   = 2011
 	CodeBookmarkExists     = 3001
 	CodeBookmarkNotFound   = 3002
 	CodeBadRequest         = 4000

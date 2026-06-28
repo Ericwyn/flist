@@ -20,18 +20,20 @@ import (
 // searchTimeout 限制单次搜索遍历的最长耗时。
 const searchTimeout = 30 * time.Second
 
-// FileHandler 处理文件操作接口（只读 + 写）。
+// FileHandler 处理文件操作接口（只读 + 写 + 上传）。
 type FileHandler struct {
-	files  *service.FileService
-	logger *slog.Logger
+	files   *service.FileService
+	uploads *service.UploadService
+	logger  *slog.Logger
 }
 
-// NewFileHandler 构造文件处理器。logger 用于写操作审计，为 nil 时回落到默认 logger。
-func NewFileHandler(files *service.FileService, logger *slog.Logger) *FileHandler {
+// NewFileHandler 构造文件处理器。uploads 可为 nil（上传接口将返回 not_supported）。
+// logger 用于写操作审计，为 nil 时回落到默认 logger。
+func NewFileHandler(files *service.FileService, uploads *service.UploadService, logger *slog.Logger) *FileHandler {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &FileHandler{files: files, logger: logger}
+	return &FileHandler{files: files, uploads: uploads, logger: logger}
 }
 
 // failFileErr 将驱动 / 服务层错误映射为统一错误响应（错误词表统一在 storage 包）。
@@ -53,6 +55,12 @@ func failFileErr(w http.ResponseWriter, err error) {
 		Fail(w, http.StatusBadRequest, CodeNotAFile, "not_a_file")
 	case errors.Is(err, storage.ErrNotDir):
 		Fail(w, http.StatusBadRequest, CodeNotADir, "not_a_dir")
+	case errors.Is(err, service.ErrUploadTooLarge):
+		Fail(w, http.StatusRequestEntityTooLarge, CodeUploadTooLarge, "upload_too_large")
+	case errors.Is(err, service.ErrUploadNotFound):
+		Fail(w, http.StatusNotFound, CodeUploadNotFound, "upload_not_found")
+	case errors.Is(err, service.ErrUploadIncomplete):
+		Fail(w, http.StatusBadRequest, CodeUploadIncomplete, "upload_incomplete")
 	case errors.Is(err, storage.ErrNotSupported):
 		Fail(w, http.StatusBadRequest, CodeBadRequest, "not_supported")
 	case errors.Is(err, storage.ErrBadOp):
@@ -311,6 +319,143 @@ func (h *FileHandler) Search(w http.ResponseWriter, r *http.Request) {
 		failFileErr(w, err)
 		return
 	}
+	OK(w, res)
+}
+
+// uploadScope 取当前用户作为上传会话的隔离维度（用户名足够区分单/少用户场景）。
+func uploadScope(r *http.Request) string {
+	if u := middleware.UserFromContext(r.Context()); u != nil {
+		return u.Username
+	}
+	return ""
+}
+
+type uploadInitRequest struct {
+	Dir         string `json:"dir"`
+	Name        string `json:"name"`
+	TotalSize   int64  `json:"total_size"`
+	ChunkSize   int64  `json:"chunk_size"`
+	Fingerprint string `json:"fingerprint"`
+}
+
+// UploadInit 处理 POST /api/fs/upload/init：初始化（或按指纹复用）上传会话。
+func (h *FileHandler) UploadInit(w http.ResponseWriter, r *http.Request) {
+	if h.uploads == nil {
+		Fail(w, http.StatusBadRequest, CodeBadRequest, "not_supported")
+		return
+	}
+	var req uploadInitRequest
+	if err := decodeJSON(w, r, &req); err != nil ||
+		strings.TrimSpace(req.Dir) == "" || strings.TrimSpace(req.Name) == "" || req.TotalSize <= 0 {
+		failBadRequest(w, "dir, name and total_size required")
+		return
+	}
+	res, err := h.uploads.Init(r.Context(), uploadScope(r), req.Dir, req.Name, req.Fingerprint, req.TotalSize, req.ChunkSize)
+	if err != nil {
+		failFileErr(w, err)
+		return
+	}
+	h.logger.Debug("upload init",
+		slog.String("upload_id", res.UploadID),
+		slog.String("dir", req.Dir),
+		slog.String("name", req.Name),
+		slog.Int64("total_size", req.TotalSize),
+		slog.Int64("chunk_size", res.ChunkSize),
+		slog.Int("total_chunks", res.TotalChunks),
+		slog.Int("already_received", len(res.Received)),
+		slog.String("request_id", middleware.RequestIDFromContext(r.Context())),
+	)
+	OK(w, res)
+}
+
+// maxChunkBody 限制单个分片请求体的硬上限（略大于最大允许分片，防御异常 body）。
+const maxChunkBody = 64<<20 + 1<<20 // 64 MiB + 1 MiB 余量
+
+// UploadChunk 处理 POST /api/fs/upload/chunk?upload_id=&index=：上传单个分片（二进制 body）。
+// 不经 decodeJSON（那是 1MB JSON 通道），直接流式读取 body 落盘。
+func (h *FileHandler) UploadChunk(w http.ResponseWriter, r *http.Request) {
+	if h.uploads == nil {
+		Fail(w, http.StatusBadRequest, CodeBadRequest, "not_supported")
+		return
+	}
+	q := r.URL.Query()
+	uploadID := q.Get("upload_id")
+	if uploadID == "" {
+		failBadRequest(w, "upload_id required")
+		return
+	}
+	index, err := strconv.Atoi(q.Get("index"))
+	if err != nil || index < 0 {
+		failBadRequest(w, "invalid index")
+		return
+	}
+
+	body := http.MaxBytesReader(w, r.Body, maxChunkBody)
+	defer body.Close()
+
+	res, cerr := h.uploads.Chunk(r.Context(), uploadID, index, body)
+	if cerr != nil {
+		h.logger.Debug("upload chunk failed",
+			slog.String("upload_id", uploadID),
+			slog.Int("index", index),
+			slog.Any("error", cerr),
+			slog.String("request_id", middleware.RequestIDFromContext(r.Context())),
+		)
+		failFileErr(w, cerr)
+		return
+	}
+	h.logger.Debug("upload chunk",
+		slog.String("upload_id", uploadID),
+		slog.Int("index", res.Index),
+		slog.Int("received", res.Received),
+		slog.String("request_id", middleware.RequestIDFromContext(r.Context())),
+	)
+	OK(w, res)
+}
+
+type uploadCompleteRequest struct {
+	UploadID  string `json:"upload_id"`
+	Overwrite bool   `json:"overwrite"`
+}
+
+// UploadComplete 处理 POST /api/fs/upload/complete：校验分片齐全后合并落盘。
+func (h *FileHandler) UploadComplete(w http.ResponseWriter, r *http.Request) {
+	if h.uploads == nil {
+		Fail(w, http.StatusBadRequest, CodeBadRequest, "not_supported")
+		return
+	}
+	var req uploadCompleteRequest
+	if err := decodeJSON(w, r, &req); err != nil || strings.TrimSpace(req.UploadID) == "" {
+		failBadRequest(w, "upload_id required")
+		return
+	}
+	res, err := h.uploads.Complete(r.Context(), req.UploadID, req.Overwrite)
+	if err != nil {
+		// 缺片时仍返回 missing 列表，便于前端补传。
+		if errors.Is(err, service.ErrUploadIncomplete) && res != nil {
+			h.logger.Debug("upload complete incomplete",
+				slog.String("upload_id", req.UploadID),
+				slog.Int("missing_count", len(res.Missing)),
+				slog.Any("missing", res.Missing),
+				slog.String("request_id", middleware.RequestIDFromContext(r.Context())),
+			)
+			h.audit(r, "upload", req.UploadID, "fail")
+			WriteJSON(w, http.StatusBadRequest, Envelope{
+				Code: CodeUploadIncomplete, Message: "upload_incomplete", Data: res,
+			})
+			return
+		}
+		h.audit(r, "upload", req.UploadID, "fail")
+		failFileErr(w, err)
+		return
+	}
+	h.logger.Debug("upload complete",
+		slog.String("upload_id", req.UploadID),
+		slog.String("path", res.Path),
+		slog.Bool("overwrite", req.Overwrite),
+		slog.String("request_id", middleware.RequestIDFromContext(r.Context())),
+	)
+	h.audit(r, "upload", res.Path, "ok")
 	OK(w, res)
 }
 

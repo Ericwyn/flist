@@ -29,7 +29,7 @@ func newLocalMount(t *testing.T, name string, files map[string]string) storage.M
 	if err != nil {
 		t.Fatal(err)
 	}
-	return storage.Mount{Name: name, Backend: local.New(real)}
+	return storage.Mount{Name: name, Backend: local.New(real, "")}
 }
 
 func TestMux_ListRoot(t *testing.T) {

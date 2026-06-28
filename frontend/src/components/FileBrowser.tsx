@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useFsStore } from '../fsStore';
 import { useStore } from '../store';
+import { useUploadStore } from '../uploadStore';
 import { FileIcon } from './FileIcon';
 import { ContextMenu, MenuItem } from './ContextMenu';
 import { PropertiesModal } from './PropertiesModal';
@@ -15,7 +16,7 @@ import {
   ArrowLeft, ArrowRight, ArrowUp, RefreshCw, Download, Info,
   Eye, EyeOff, ArrowDownAZ, ArrowUpAZ, LayoutGrid, List as ListIcon,
   Link2, AlertTriangle, Loader2, FolderOpen, ExternalLink,
-  FolderPlus, FilePlus, Pencil, Trash2, Copy, Scissors, ClipboardPaste, Star,
+  FolderPlus, FilePlus, Pencil, Trash2, Copy, Scissors, ClipboardPaste, Star, Upload,
 } from 'lucide-react';
 import { useBookmarkStore } from '../bookmarkStore';
 
@@ -58,6 +59,7 @@ export function FileBrowser() {
   } = useFsStore();
   const { viewMode, setViewMode } = useStore();
   const addBookmark = useBookmarkStore((s) => s.add);
+  const enqueueUpload = useUploadStore((s) => s.enqueue);
 
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [propsTarget, setPropsTarget] = useState<{ path: string; entry: FileEntry } | null>(null);
@@ -65,6 +67,18 @@ export function FileBrowser() {
   const [dialog, setDialog] = useState<DialogState | null>(null);
   // 短暂操作提示（粘贴失败 / 收藏结果等）。
   const [toast, setToast] = useState<string | null>(null);
+  // 拖拽上传的悬停高亮态（仅非搜索态生效）。
+  const [dragOver, setDragOver] = useState(false);
+  // 隐藏的文件选择 input，用于工具栏「上传」按钮触发。
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // doUpload 把一批文件加入上传队列（目标为当前目录）。
+  const doUpload = (files: FileList | File[] | null) => {
+    if (!files) return;
+    const arr = Array.from(files);
+    if (arr.length === 0) return;
+    void enqueueUpload(arr, currentPath);
+  };
 
   // notify 显示一条短暂提示，3 秒后自动消失。
   const notify = (msg: string) => {
@@ -367,6 +381,12 @@ export function FileBrowser() {
               title="新建文件">
               <FilePlus className="w-[18px] h-[18px]" />
             </button>
+            <button onClick={() => fileInputRef.current?.click()}
+              disabled={searchOpen}
+              className="p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed"
+              title="上传文件">
+              <Upload className="w-[18px] h-[18px]" />
+            </button>
             <div className="w-px h-5 bg-slate-200 dark:bg-slate-700 mx-1" />
             <button onClick={() => selectedEntry && showProps(selectedEntry)}
               disabled={!selectedEntry || searchOpen}
@@ -421,10 +441,48 @@ export function FileBrowser() {
         </div>
       </div>
 
-      {/* 内容区 */}
-      <div className="flex-1 overflow-auto p-4"
+      {/* 隐藏的文件选择器，工具栏「上传」按钮触发 */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          doUpload(e.target.files);
+          e.target.value = ''; // 允许重复选择同一文件再次触发
+        }}
+      />
+
+      {/* 内容区（兼作拖拽上传放置区） */}
+      <div className="flex-1 overflow-auto p-4 relative"
         onClick={() => select(null)}
-        onContextMenu={onBackgroundContextMenu}>
+        onContextMenu={onBackgroundContextMenu}
+        onDragOver={(e) => {
+          if (searchOpen) return;
+          // 仅当拖入的是文件时才接管（忽略元素内部拖拽）。
+          if (!Array.from(e.dataTransfer.types).includes('Files')) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'copy';
+          if (!dragOver) setDragOver(true);
+        }}
+        onDragLeave={(e) => {
+          // 仅当离开内容区边界时取消高亮（忽略子元素间的冒泡）。
+          if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+          setDragOver(false);
+        }}
+        onDrop={(e) => {
+          if (searchOpen) return;
+          if (!Array.from(e.dataTransfer.types).includes('Files')) return;
+          e.preventDefault();
+          setDragOver(false);
+          doUpload(e.dataTransfer.files);
+        }}>
+        {dragOver && (
+          <div className="absolute inset-2 z-20 rounded-xl border-2 border-dashed border-blue-400 bg-blue-50/70 dark:bg-blue-900/30 flex flex-col items-center justify-center pointer-events-none">
+            <Upload className="w-10 h-10 text-blue-500 mb-2" />
+            <p className="text-sm text-blue-600 dark:text-blue-300 font-medium">释放以上传到当前目录</p>
+          </div>
+        )}
         {searchOpen ? (
           <SearchResultsView
             query={searchQuery}

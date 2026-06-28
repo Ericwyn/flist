@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -19,19 +20,27 @@ import (
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	// 用 LevelVar 持有日志级别，便于配置加载后按 --debug 动态调整。
+	levelVar := new(slog.LevelVar) // 默认 Info
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: levelVar}))
 	slog.SetDefault(logger)
 
-	if err := run(logger); err != nil {
+	if err := run(logger, levelVar); err != nil {
 		logger.Error("fatal", slog.Any("error", err))
 		os.Exit(1)
 	}
 }
 
-func run(logger *slog.Logger) error {
+func run(logger *slog.Logger, levelVar *slog.LevelVar) error {
 	cfg, err := config.Load(os.Args[1:])
 	if err != nil {
 		return err
+	}
+
+	// --debug：把日志级别降到 Debug，输出上传分片等细节。
+	if cfg.Debug {
+		levelVar.Set(slog.LevelDebug)
+		logger.Info("debug logging enabled")
 	}
 
 	st, err := store.Open(cfg.Data)
@@ -62,12 +71,19 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("root resolved", slog.String("root", rootReal))
 
-	backend, err := buildBackend(cfg, rootReal, logger)
+	// 分片上传暂存根目录（与 root 解耦，置于数据目录下，便于整洁与回收）。
+	stagingDir := filepath.Join(cfg.Data, "uploads.tmp")
+	if err := os.MkdirAll(stagingDir, 0o700); err != nil {
+		return fmt.Errorf("create upload staging dir: %w", err)
+	}
+
+	backend, err := buildBackend(cfg, rootReal, stagingDir, logger)
 	if err != nil {
 		return err
 	}
 	fileSvc := service.NewFileService(backend)
 	bookmarkSvc := service.NewBookmarkService(st, backend)
+	uploadSvc := service.NewUploadService(backend, util.NewPathLocker(), cfg.MaxUpload)
 
 	created, genPass, err := authSvc.EnsureAdmin("admin", "")
 	if err != nil {
@@ -84,12 +100,15 @@ func run(logger *slog.Logger) error {
 	cleanupCtx, stopCleanup := context.WithCancel(context.Background())
 	defer stopCleanup()
 	go runSessionCleanup(cleanupCtx, authSvc, logger)
+	// 后台定时清理过期上传会话与孤儿暂存分片（24h）。
+	go runUploadSweep(cleanupCtx, uploadSvc, logger)
 
 	router, err := server.NewRouter(server.Deps{
 		Config:    cfg,
 		Auth:      authSvc,
 		Files:     fileSvc,
 		Bookmarks: bookmarkSvc,
+		Uploads:   uploadSvc,
 		Logger:    logger,
 	})
 	if err != nil {
@@ -124,12 +143,31 @@ func run(logger *slog.Logger) error {
 // 示例（待 webdav 驱动落地后启用）：
 //
 //	mounts := []storage.Mount{
-//	    {Name: "local", Backend: local.New(rootReal)},
+//	    {Name: "local", Backend: local.New(rootReal, stagingDir)},
 //	    {Name: "box1",  Backend: webdav.New(cfg.WebDAV[0])},
 //	}
 //	return storage.NewMux(mounts), nil
-func buildBackend(_ *config.Config, rootReal string, _ *slog.Logger) (storage.Backend, error) {
-	return local.New(rootReal), nil
+//
+// stagingDir 为分片上传暂存根目录，仅本地驱动承载上传时需要（远程驱动有自己的上传实现）。
+func buildBackend(_ *config.Config, rootReal, stagingDir string, _ *slog.Logger) (storage.Backend, error) {
+	return local.New(rootReal, stagingDir), nil
+}
+
+// runUploadSweep 每小时清理一次过期上传会话与孤儿暂存分片（保留窗口 24h），直到 ctx 取消。
+func runUploadSweep(ctx context.Context, uploads *service.UploadService, logger *slog.Logger) {
+	const maxAge = 24 * time.Hour
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if n := uploads.Sweep(maxAge); n > 0 {
+				logger.Info("stale upload sessions cleaned", slog.Int("count", n))
+			}
+		}
+	}
 }
 
 // runSessionCleanup 每小时清理一次过期会话，直到 ctx 取消。

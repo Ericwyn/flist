@@ -42,7 +42,7 @@ func newFSTestServer(t *testing.T) (http.Handler, string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	files := service.NewFileService(local.New(rootReal))
+	files := service.NewFileService(local.New(rootReal, t.TempDir()))
 
 	router, err := NewRouter(Deps{
 		Config: &config.Config{SessionTTL: time.Hour},

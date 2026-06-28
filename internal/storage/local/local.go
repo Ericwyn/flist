@@ -8,11 +8,15 @@ package local
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"flist/internal/model"
 	"flist/internal/storage"
@@ -20,20 +24,25 @@ import (
 )
 
 // Local 是本地文件系统驱动，持有启动时缓存的 rootReal（绝对真实路径）。
+// stagingDir 为分片上传的暂存根目录（通常是 <DATA_DIR>/uploads.tmp），与 root 解耦，
+// 便于目录整洁与跨分区稳定；为空时表示不支持上传（StageChunk 等返回 ErrNotSupported）。
 type Local struct {
-	rootReal string
+	rootReal   string
+	stagingDir string
 }
 
 // New 构造本地驱动。rootReal 必须是已通过 util.ResolveRoot 标准化的绝对真实路径。
-func New(rootReal string) *Local {
-	return &Local{rootReal: rootReal}
+// stagingDir 为分片上传暂存根目录（可为空，表示该驱动实例不承载上传）。
+func New(rootReal, stagingDir string) *Local {
+	return &Local{rootReal: rootReal, stagingDir: stagingDir}
 }
 
 // 确保 Local 实现了核心接口与可选接口。
 var (
-	_ storage.Backend = (*Local)(nil)
-	_ storage.Walker  = (*Local)(nil)
-	_ storage.Usager  = (*Local)(nil)
+	_ storage.Backend  = (*Local)(nil)
+	_ storage.Walker   = (*Local)(nil)
+	_ storage.Usager   = (*Local)(nil)
+	_ storage.Uploader = (*Local)(nil)
 )
 
 func (b *Local) Name() string { return "local" }
@@ -408,4 +417,195 @@ func isSubpath(parent, child string) bool {
 		p += string(os.PathSeparator)
 	}
 	return strings.HasPrefix(child, p)
+}
+
+// ---- 分片上传（storage.Uploader）----
+//
+// 暂存布局：<stagingDir>/<uploadID>/<index>.part。uploadID 由上层（UploadService）生成的
+// 高熵随机 token，仅做基本字符校验后用作目录名；分片字节先写 <index>.part.tmp 再 rename，
+// 保证单分片落盘的原子性与重传幂等。
+
+// validUploadID 校验 uploadID 仅含安全字符（token 为 Base64URL：字母数字与 - _），
+// 防止借 uploadID 注入路径分隔符逃逸 stagingDir。
+func validUploadID(id string) bool {
+	if id == "" || len(id) > 128 {
+		return false
+	}
+	for _, c := range id {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '-' || c == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// stagingPath 返回某次上传的暂存目录绝对路径。
+func (b *Local) stagingPath(uploadID string) string {
+	return filepath.Join(b.stagingDir, uploadID)
+}
+
+// chunkPath 返回某分片的暂存文件绝对路径。
+func chunkName(index int) string { return strconv.Itoa(index) + ".part" }
+
+// StageChunk 将第 index 个分片写入暂存区（先写临时文件再 rename，同 index 重传幂等覆盖）。
+func (b *Local) StageChunk(_ context.Context, uploadID string, index int, r io.Reader) (int64, error) {
+	if b.stagingDir == "" {
+		return 0, storage.ErrNotSupported
+	}
+	if !validUploadID(uploadID) || index < 0 {
+		return 0, storage.ErrBadOp
+	}
+	dir := b.stagingPath(uploadID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return 0, mapErr(err)
+	}
+	final := filepath.Join(dir, chunkName(index))
+	tmp, err := os.CreateTemp(dir, chunkName(index)+".*.tmp")
+	if err != nil {
+		return 0, mapErr(err)
+	}
+	tmpName := tmp.Name()
+	n, werr := io.Copy(tmp, r)
+	if cerr := tmp.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		_ = os.Remove(tmpName)
+		return 0, mapErr(werr)
+	}
+	if err := os.Rename(tmpName, final); err != nil {
+		_ = os.Remove(tmpName)
+		return 0, mapErr(err)
+	}
+	return n, nil
+}
+
+// MergeUpload 按序拼接 [0, totalChunks) 分片到 dst，成功后删除暂存区。
+// overwrite=false 且 dst 已存在 → ErrExists；overwrite=true 则原子替换。
+func (b *Local) MergeUpload(_ context.Context, uploadID, dst string, totalChunks int, overwrite bool) error {
+	if b.stagingDir == "" {
+		return storage.ErrNotSupported
+	}
+	if !validUploadID(uploadID) || totalChunks < 1 {
+		return storage.ErrBadOp
+	}
+	dstAPI := util.CleanAPIPath(dst)
+	if dstAPI == "/" {
+		return storage.ErrBadOp
+	}
+	if err := util.ValidateName(path.Base(dstAPI)); err != nil {
+		return storage.ErrInvalidName
+	}
+	dstLocal, err := util.SafeResolve(b.rootReal, dstAPI)
+	if err != nil {
+		return mapErr(err)
+	}
+	if _, err := os.Stat(filepath.Dir(dstLocal)); err != nil {
+		return mapErr(err) // 父目录须存在
+	}
+	if _, err := os.Lstat(dstLocal); err == nil && !overwrite {
+		return storage.ErrExists
+	}
+
+	stageDir := b.stagingPath(uploadID)
+	// 先在目标同目录写临时文件，拼接完成后 rename，避免合并中途损坏既有文件。
+	tmp, err := os.CreateTemp(filepath.Dir(dstLocal), ".flist-upload-*.tmp")
+	if err != nil {
+		return mapErr(err)
+	}
+	tmpName := tmp.Name()
+	if err := b.concatChunks(tmp, stageDir, totalChunks); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return mapErr(err)
+	}
+	// 覆盖：rename 在多数系统对已存在目标是原子替换；为兼容 Windows，先尝试删旧。
+	if overwrite {
+		if fi, serr := os.Lstat(dstLocal); serr == nil {
+			if fi.IsDir() {
+				_ = os.Remove(tmpName)
+				return storage.ErrExists // 目标是目录，不可被文件覆盖
+			}
+			_ = os.Remove(dstLocal)
+		}
+	}
+	if err := os.Rename(tmpName, dstLocal); err != nil {
+		_ = os.Remove(tmpName)
+		return mapErr(err)
+	}
+	_ = os.RemoveAll(stageDir) // 合并成功后清理暂存区（失败不影响结果，留待 sweep）
+	return nil
+}
+
+// concatChunks 按 index 升序把所有分片内容写入 w；任一分片缺失则报错。
+func (b *Local) concatChunks(w io.Writer, stageDir string, totalChunks int) error {
+	for i := 0; i < totalChunks; i++ {
+		cp := filepath.Join(stageDir, chunkName(i))
+		in, err := os.Open(cp)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("chunk %d missing: %w", i, storage.ErrBadOp)
+			}
+			return mapErr(err)
+		}
+		_, cerr := io.Copy(w, in)
+		in.Close()
+		if cerr != nil {
+			return mapErr(cerr)
+		}
+	}
+	return nil
+}
+
+// AbortChunk 删除某次上传中单个分片的暂存文件（幂等）。
+func (b *Local) AbortChunk(uploadID string, index int) error {
+	if b.stagingDir == "" || !validUploadID(uploadID) || index < 0 {
+		return nil
+	}
+	return os.Remove(filepath.Join(b.stagingPath(uploadID), chunkName(index)))
+}
+
+// AbortUpload 删除某次上传的暂存区（幂等）。
+func (b *Local) AbortUpload(uploadID string) error {
+	if b.stagingDir == "" || !validUploadID(uploadID) {
+		return nil
+	}
+	return os.RemoveAll(b.stagingPath(uploadID))
+}
+
+// SweepStaging 删除 mtime 早于 now-maxAge 的孤儿暂存目录，返回清理数量。
+func (b *Local) SweepStaging(maxAge time.Duration) (int, error) {
+	if b.stagingDir == "" {
+		return 0, nil
+	}
+	entries, err := os.ReadDir(b.stagingDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, mapErr(err)
+	}
+	cutoff := time.Now().Add(-maxAge)
+	cleaned := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		fi, ierr := e.Info()
+		if ierr != nil {
+			continue
+		}
+		if fi.ModTime().Before(cutoff) {
+			if rerr := os.RemoveAll(filepath.Join(b.stagingDir, e.Name())); rerr == nil {
+				cleaned++
+			}
+		}
+	}
+	return cleaned, nil
 }

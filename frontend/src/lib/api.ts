@@ -2,6 +2,7 @@
 import {
   FileEntry, ListResult, PreviewResult, ListOptions,
   OpResult, SearchResult, SearchHit, SearchOptions, Bookmark,
+  UploadInitResult,
 } from '../types';
 import { parentPath, joinPath } from './path';
 
@@ -226,6 +227,68 @@ export const api = {
         timedOut: raw.timed_out,
       };
     },
+
+    // uploadInit 初始化（或按指纹复用）分片上传会话。
+    async uploadInit(
+      dir: string,
+      name: string,
+      totalSize: number,
+      chunkSize: number,
+      fingerprint: string,
+    ): Promise<UploadInitResult> {
+      const raw = await request<RawUploadInit>('/api/fs/upload/init', {
+        method: 'POST',
+        body: {
+          dir,
+          name,
+          total_size: totalSize,
+          chunk_size: chunkSize,
+          fingerprint,
+        },
+      });
+      return {
+        uploadId: raw.upload_id,
+        chunkSize: raw.chunk_size,
+        totalChunks: raw.total_chunks,
+        received: raw.received || [],
+      };
+    },
+
+    // uploadChunk 上传单个分片（二进制 body，不走 JSON 信封）。
+    // 用裸 fetch + Authorization 头，body 为分片 Blob。
+    async uploadChunk(uploadId: string, index: number, blob: Blob): Promise<void> {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/octet-stream',
+      };
+      const token = getToken();
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const params = new URLSearchParams({ upload_id: uploadId, index: String(index) });
+      const resp = await fetch(`/api/fs/upload/chunk?${params.toString()}`, {
+        method: 'POST',
+        headers,
+        body: blob,
+        credentials: 'same-origin',
+      });
+      let env: Envelope<unknown>;
+      try {
+        env = (await resp.json()) as Envelope<unknown>;
+      } catch {
+        throw new ApiError(resp.status, `分片上传失败 (HTTP ${resp.status})`);
+      }
+      if (env.code !== 0) {
+        throw new ApiError(env.code, env.message || '分片上传失败');
+      }
+    },
+
+    // uploadComplete 校验分片齐全后合并落盘。返回落盘路径。
+    async uploadComplete(uploadId: string, overwrite: boolean): Promise<string> {
+      const raw = await request<RawPathResult>('/api/fs/upload/complete', {
+        method: 'POST',
+        body: { upload_id: uploadId, overwrite },
+      });
+      return raw.path;
+    },
   },
 
   bookmarks: {
@@ -297,6 +360,13 @@ interface RawPreview {
 
 interface RawPathResult {
   path: string;
+}
+
+interface RawUploadInit {
+  upload_id: string;
+  chunk_size: number;
+  total_chunks: number;
+  received: number[];
 }
 
 interface RawOpResults {

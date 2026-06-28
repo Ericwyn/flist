@@ -89,3 +89,32 @@ export interface Clipboard {
   mode: 'copy' | 'cut';
   paths: string[];
 }
+
+// 上传初始化返回，对应后端 model.UploadInitResult。
+export interface UploadInitResult {
+  uploadId: string;
+  chunkSize: number;
+  totalChunks: number;
+  received: number[]; // 已收分片索引（断点续传时非空）
+}
+
+// 上传任务状态机：
+//   pending    等待开始（已入队）
+//   conflict   目标已存在，等待用户选择覆盖/改名/取消
+//   uploading  分片上传中
+//   done       完成
+//   error      失败
+//   canceled   用户取消
+export type UploadStatus = 'pending' | 'conflict' | 'uploading' | 'done' | 'error' | 'canceled';
+
+// 单个上传任务（前端内存态，不持久化）。
+export interface UploadTask {
+  id: string; // 前端生成的本地任务 id
+  file: File;
+  dir: string; // 目标目录 API 路径
+  name: string; // 目标文件名（改名后可不同于 file.name）
+  status: UploadStatus;
+  loaded: number; // 已上传字节（进度展示）
+  total: number; // 文件总字节
+  error?: string; // 失败时的可读信息
+}

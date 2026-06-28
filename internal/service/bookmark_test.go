@@ -31,7 +31,7 @@ func setupBookmarkSvc(t *testing.T) (*BookmarkService, string, int64) {
 	if err != nil {
 		t.Fatalf("ResolveRoot: %v", err)
 	}
-	return NewBookmarkService(st, local.New(real)), real, uid
+	return NewBookmarkService(st, local.New(real, t.TempDir())), real, uid
 }
 
 func TestBookmark_CreateAndList(t *testing.T) {
