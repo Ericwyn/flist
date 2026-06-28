@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { HardDrive, Home, Settings, StarOff, Pencil, Trash2, Plus, AlertTriangle } from 'lucide-react';
+import { HardDrive, Home, Settings, StarOff, Pencil, Trash2, Plus, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react';
 import { useFsStore } from '../fsStore';
 import { useAuthStore } from '../authStore';
 import { useBookmarkStore } from '../bookmarkStore';
@@ -32,6 +32,10 @@ export function Sidebar() {
   const [menu, setMenu] = useState<{ x: number; y: number; bm: Bookmark } | null>(null);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [overIndex, setOverIndex] = useState<number | null>(null);
+
+  // 收藏夹折叠：超过上限时默认仅展示前 N 项，点击「展开更多」显示全部，避免挤占最近访问。
+  const BOOKMARK_PREVIEW_LIMIT = 10;
+  const [bookmarksExpanded, setBookmarksExpanded] = useState(false);
 
   const atRoot = currentPath === '/';
 
@@ -175,7 +179,10 @@ export function Sidebar() {
             </p>
           ) : (
             <div className="space-y-0.5">
-              {items.map((bm, idx) => (
+              {(items.length > BOOKMARK_PREVIEW_LIMIT && !bookmarksExpanded
+                ? items.slice(0, BOOKMARK_PREVIEW_LIMIT)
+                : items
+              ).map((bm, idx) => (
                 <div
                   key={bm.id}
                   draggable
@@ -234,6 +241,18 @@ export function Sidebar() {
                   </button>
                 </div>
               ))}
+              {items.length > BOOKMARK_PREVIEW_LIMIT && (
+                <button
+                  onClick={() => setBookmarksExpanded((v) => !v)}
+                  className="w-full flex items-center justify-center gap-1 mt-1 px-2 py-1 text-[11px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-white dark:hover:bg-slate-800 rounded-lg transition-colors"
+                >
+                  {bookmarksExpanded ? (
+                    <>收起 <ChevronUp className="w-3 h-3" /></>
+                  ) : (
+                    <>展开更多（共 {items.length} 个）<ChevronDown className="w-3 h-3" /></>
+                  )}
+                </button>
+              )}
             </div>
           )}
         </section>

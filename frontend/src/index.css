@@ -2,6 +2,48 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* 不起眼的滚动条：窄轨、透明轨道；滑块默认透明，悬停滚动区域时淡入、离开淡出，
+   近似 macOS 覆盖式自动隐藏。Firefox 不支持悬停淡入，故采用细窄半透明滑块兜底。 */
+html {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.4) transparent;
+}
+html.dark {
+  scrollbar-color: rgba(148, 163, 184, 0.3) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 0.25s ease;
+}
+/* 悬停滚动区域时滑块淡入；直接悬停滑块再加深，便于精确拖动。 */
+*:hover::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.4);
+  background-clip: padding-box;
+}
+*:hover::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.6);
+  background-clip: padding-box;
+}
+.dark *:hover::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  background-clip: padding-box;
+}
+.dark *:hover::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.5);
+  background-clip: padding-box;
+}
+
 /* 不确定态进度条：用于流式打包下载（无总大小），滑块左右往返表示进行中。 */
 @theme {
   --animate-indeterminate: indeterminate 1.2s ease-in-out infinite;

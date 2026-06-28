@@ -49,6 +49,9 @@ export const useUploadStore = create<UploadState>((set, get) => ({
       status: 'pending',
       loaded: 0,
       total: file.size,
+      speed: 0,
+      lastLoaded: 0,
+      lastTs: 0,
     }));
     set((s) => ({ tasks: [...s.tasks, ...newTasks], panelOpen: true }));
 
@@ -125,7 +128,8 @@ async function runUpload(
 ) {
   const task = get().tasks.find((t) => t.id === id);
   if (!task) return;
-  patch(set, id, { status: 'uploading', loaded: 0, error: undefined });
+  const now = Date.now();
+  patch(set, id, { status: 'uploading', loaded: 0, speed: 0, lastLoaded: 0, lastTs: now, error: undefined });
 
   try {
     const init = await api.fs.uploadInit(
@@ -141,7 +145,7 @@ async function runUpload(
     // 已收分片直接计入进度（断点续传）。
     let uploaded = received.size;
     const totalChunks = init.totalChunks;
-    syncProgress(set, id, uploaded, totalChunks, task.file.size);
+    syncProgress(set, get, id, uploaded, totalChunks, task.file.size);
 
     // 待传分片索引队列。
     const pending: number[] = [];
@@ -163,7 +167,7 @@ async function runUpload(
         try {
           await api.fs.uploadChunk(init.uploadId, idx, blob);
           uploaded++;
-          syncProgress(set, id, uploaded, totalChunks, task.file.size);
+          syncProgress(set, get, id, uploaded, totalChunks, task.file.size);
         } catch (e) {
           failed = e;
           return;
@@ -180,24 +184,55 @@ async function runUpload(
     if (failed) throw failed;
 
     await api.fs.uploadComplete(init.uploadId, overwrite);
-    patch(set, id, { status: 'done', loaded: task.file.size });
+    patch(set, id, { status: 'done', loaded: task.file.size, speed: 0, lastLoaded: 0, lastTs: 0 });
     maybeRefresh(task.dir);
   } catch (e) {
     handleAuth(e);
-    patch(set, id, { status: 'error', error: uploadErrMessage(e) });
+    patch(set, id, { status: 'error', error: uploadErrMessage(e), speed: 0 });
   }
 }
 
-// syncProgress 按已传分片数估算字节进度。
+// syncProgress 按已传分片数估算字节进度，并基于快照计算 EMA 平滑速率。
+// 间隔过短（<50ms）时仅更新 loaded、保留旧基线让 dt 累积，避免高频回调永远算不到速率；
+// 无增量时同样仅更新 loaded。首次（lastTs=0）仅记录基线。
+const SPEED_EMA_ALPHA = 0.5;
+const SPEED_MIN_DT = 50;
+
 function syncProgress(
   set: (fn: (s: UploadState) => Partial<UploadState>) => void,
+  get: () => UploadState,
   id: string,
   uploadedChunks: number,
   totalChunks: number,
   totalBytes: number,
 ) {
   const ratio = totalChunks > 0 ? uploadedChunks / totalChunks : 0;
-  patch(set, id, { loaded: Math.round(ratio * totalBytes) });
+  const loaded = Math.round(ratio * totalBytes);
+  const task = get().tasks.find((t) => t.id === id);
+  if (!task) {
+    patch(set, id, { loaded });
+    return;
+  }
+  const now = Date.now();
+  // 首次：仅记录基线，不计算速率。
+  if (task.lastTs === 0) {
+    patch(set, id, { loaded, lastLoaded: loaded, lastTs: now });
+    return;
+  }
+  const dt = now - task.lastTs;
+  // 间隔过短：仅更新 loaded，保留旧 lastTs/lastLoaded 让 dt 累积到阈值再算。
+  if (dt < SPEED_MIN_DT) {
+    patch(set, id, { loaded });
+    return;
+  }
+  const delta = loaded - task.lastLoaded;
+  if (delta <= 0) {
+    patch(set, id, { loaded, lastTs: now });
+    return;
+  }
+  const inst = (delta * 1000) / dt;
+  const speed = task.speed === 0 ? inst : task.speed * SPEED_EMA_ALPHA + inst * (1 - SPEED_EMA_ALPHA);
+  patch(set, id, { loaded, speed, lastLoaded: loaded, lastTs: now });
 }
 
 // patch 更新指定任务的部分字段。

@@ -6,7 +6,7 @@ type ViewMode = 'grid' | 'list';
 
 const UI_PREFS_KEY = 'flist.uiPrefs';
 const RECENT_ACCESS_KEY = 'flist.recentAccess';
-const DEFAULT_RECENT_LIMIT = 10;
+const DEFAULT_RECENT_LIMIT = 5;
 const MIN_RECENT_LIMIT = 1;
 const MAX_RECENT_LIMIT = 50;
 const VIEW_SCALE_MIN = 0.75;

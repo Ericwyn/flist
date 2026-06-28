@@ -136,6 +136,25 @@ function pathName(p: string): string {
 const SEARCH_HISTORY_KEY = 'flist.searchHistory';
 const SEARCH_HISTORY_MAX = 10;
 
+// 隐藏文件展示偏好持久化：跨会话保留用户选择（true = 显示隐藏文件）。
+const SHOW_HIDDEN_KEY = 'flist.showHidden';
+
+function loadShowHidden(): boolean {
+  try {
+    return localStorage.getItem(SHOW_HIDDEN_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function saveShowHidden(v: boolean) {
+  try {
+    localStorage.setItem(SHOW_HIDDEN_KEY, v ? '1' : '0');
+  } catch {
+    // 忽略持久化失败（隐私模式 / 配额），内存态仍可用。
+  }
+}
+
 function loadSearchHistory(): string[] {
   try {
     const raw = localStorage.getItem(SEARCH_HISTORY_KEY);
@@ -170,7 +189,7 @@ export const useFsStore = create<FsState>((set, get) => ({
   spaceVersion: 0,
   sort: 'name',
   order: 'asc',
-  showHidden: false,
+  showHidden: loadShowHidden(),
   history: ['/'],
   historyIndex: 0,
   selected: new Set<string>(),
@@ -309,7 +328,9 @@ export const useFsStore = create<FsState>((set, get) => ({
   },
 
   toggleHidden: () => {
-    set({ showHidden: !get().showHidden });
+    const next = !get().showHidden;
+    set({ showHidden: next });
+    saveShowHidden(next);
     get().refresh();
   },
 

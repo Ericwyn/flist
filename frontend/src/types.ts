@@ -174,5 +174,8 @@ export interface UploadTask {
   status: UploadStatus;
   loaded: number; // 已上传字节（进度展示）
   total: number; // 文件总字节
+  speed: number; // 当前瞬时速率（bytes/s），EMA 平滑，仅 uploading 态有效
+  lastLoaded: number; // 上次进度快照字节（内部，速率计算用）
+  lastTs: number; // 上次进度快照时间戳 ms（内部）
   error?: string; // 失败时的可读信息
 }

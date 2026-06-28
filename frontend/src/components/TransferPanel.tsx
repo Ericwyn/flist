@@ -130,7 +130,7 @@ function DownloadRow({ task }: { task: DownloadTask }) {
 function downloadStatusLabel(task: DownloadTask): string {
   switch (task.status) {
     case 'downloading':
-      return `打包下载中 · 已接收 ${formatBytes(task.loaded)}`;
+      return `打包下载中 · 已接收 ${formatBytes(task.loaded)} · ${formatBytes(task.speed)}/s`;
     case 'done':
       return `完成 · ${formatBytes(task.loaded)}`;
     case 'error':
@@ -279,7 +279,7 @@ function uploadStatusLabel(task: UploadTask, pct: number): string {
     case 'pending':
       return '等待中…';
     case 'uploading':
-      return `${pct}% · ${formatBytes(task.loaded)} / ${formatBytes(task.total)}`;
+      return `${pct}% · ${formatBytes(task.loaded)} / ${formatBytes(task.total)} · ${formatBytes(task.speed)}/s`;
     case 'done':
       return `完成 · ${formatBytes(task.total)}`;
     case 'conflict':
