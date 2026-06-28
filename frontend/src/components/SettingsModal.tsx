@@ -32,6 +32,9 @@ function errMessage(e: unknown, map: Record<number, string>): string {
   return '操作失败，请重试';
 }
 
+// 应用版本号（简单展示用，发版时手动同步）。
+const APP_VERSION = 'v0.1.5';
+
 // SettingsModal 集中管理用户名、密码、主题与退出。
 export function SettingsModal({ onClose }: SettingsModalProps) {
   const { user, setUser, logout } = useAuthStore();
@@ -54,6 +57,9 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
           onLimitChange={setRecentLimit}
         />
         <LogoutSection onLogout={() => logout()} />
+      </div>
+      <div className="text-[11px] text-slate-400 dark:text-slate-600 text-center select-none mt-2">
+        flist {APP_VERSION}
       </div>
     </Modal>
   );
@@ -521,7 +527,7 @@ function RecentAccessSection({
 
 function LogoutSection({ onLogout }: { onLogout: () => void }) {
   return (
-    <section className="pt-4 border-t border-slate-100 dark:border-slate-800">
+    <section className="pt-2 border-slate-100 dark:border-slate-800">
       <button
         onClick={onLogout}
         className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium rounded-lg text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-900/20 hover:bg-rose-100 dark:hover:bg-rose-900/30 transition-colors"
