@@ -19,7 +19,7 @@ import {
   Eye, EyeOff, ArrowDownAZ, ArrowUpAZ, LayoutGrid, List as ListIcon,
   Link2, AlertTriangle, Loader2, FolderOpen, ExternalLink,
   FolderPlus, FilePlus, Pencil, Trash2, Copy, Scissors, ClipboardPaste, Star, Upload,
-  ZoomIn, ZoomOut,
+  ZoomIn, ZoomOut, MoreHorizontal,
 } from 'lucide-react';
 import { useBookmarkStore } from '../bookmarkStore';
 
@@ -69,6 +69,7 @@ export function FileBrowser() {
   const startDownload = useDownloadStore((s) => s.start);
 
   const [menu, setMenu] = useState<MenuState | null>(null);
+  const [crumbMenu, setCrumbMenu] = useState<{ x: number; y: number } | null>(null);
   const [propsTarget, setPropsTarget] = useState<{ path: string; entry: FileEntry } | null>(null);
   // 弹窗状态：新建目录 / 新建文件 / 重命名 / 删除确认。
   const [dialog, setDialog] = useState<DialogState | null>(null);
@@ -269,6 +270,8 @@ export function FileBrowser() {
   };
 
   const crumbs = breadcrumbs(currentPath);
+  const collapsedCrumbs = crumbs.length > 4 ? crumbs.slice(1, -2) : [];
+  const visibleCrumbs = crumbs.length > 4 ? [crumbs[0], ...crumbs.slice(-2)] : crumbs;
   const canBack = historyIndex > 0;
   const canForward = historyIndex < history.length - 1;
   const canUp = currentPath !== '/';
@@ -515,12 +518,12 @@ export function FileBrowser() {
   };
 
   return (
-    <div className="flex-1 flex flex-col h-full bg-white dark:bg-slate-950 transition-colors duration-200 relative">
+    <div className="flex-1 min-w-0 flex flex-col h-full bg-white dark:bg-slate-950 transition-colors duration-200 relative overflow-hidden">
       {/* 顶部工具栏 */}
       <div className="border-b border-slate-200 dark:border-slate-800 sticky top-0 z-10 shrink-0">
-        <div className="h-14 flex items-center justify-between px-4 gap-3">
+        <div className="h-14 flex items-center px-4 gap-3 min-w-0 overflow-hidden">
           {/* 导航 + 面包屑（搜索态切换为「退出搜索」按钮 + 结果标题） */}
-          <div className="flex items-center text-sm min-w-0">
+          <div className="flex flex-1 basis-0 items-center text-sm min-w-0 overflow-hidden">
             {searchOpen ? (
               <>
                 <button
@@ -531,7 +534,7 @@ export function FileBrowser() {
                   <ArrowLeft className="w-[18px] h-[18px]" />
                   <span>退出搜索</span>
                 </button>
-                <span className="text-slate-900 dark:text-slate-100 font-medium truncate min-w-0">
+                <span className="flex-1 basis-0 text-slate-900 dark:text-slate-100 font-medium truncate min-w-0">
                   「{crumbs[crumbs.length - 1].name}」目录下的搜索结果
                 </span>
               </>
@@ -554,17 +557,34 @@ export function FileBrowser() {
                     <ArrowUp className="w-[18px] h-[18px]" />
                   </button>
                 </div>
-                <div className="flex items-center min-w-0 overflow-x-auto">
-                  {crumbs.map((c, idx) => (
+                <div className="flex flex-1 basis-0 items-center min-w-0 overflow-hidden pr-1">
+                  {visibleCrumbs.map((c, idx) => (
                     <React.Fragment key={c.path}>
-                      {idx > 0 && <span className="text-slate-300 dark:text-slate-600 mx-1.5">/</span>}
+                      {idx > 0 && <span className="text-slate-300 dark:text-slate-600 mx-1.5 shrink-0">/</span>}
+                      {idx === 1 && collapsedCrumbs.length > 0 && (
+                        <>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              setCrumbMenu({ x: rect.left, y: rect.bottom + 6 });
+                            }}
+                            className="p-1 rounded-md text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0"
+                            title="选择上级目录"
+                          >
+                            <MoreHorizontal className="w-4 h-4" />
+                          </button>
+                          <span className="text-slate-300 dark:text-slate-600 mx-1.5 shrink-0">/</span>
+                        </>
+                      )}
                       <button
                         onClick={() => navigate(c.path)}
+                        title={c.path}
                         className={cn(
-                          'hover:text-blue-600 dark:hover:text-blue-400 transition-colors max-w-[160px] truncate shrink-0',
-                          idx === crumbs.length - 1
-                            ? 'text-slate-900 dark:text-slate-100 font-medium'
-                            : 'text-slate-500 dark:text-slate-400',
+                          'hover:text-blue-600 dark:hover:text-blue-400 transition-colors truncate shrink min-w-0',
+                          idx === visibleCrumbs.length - 1
+                            ? 'max-w-[220px] text-slate-900 dark:text-slate-100 font-medium'
+                            : 'max-w-[120px] text-slate-500 dark:text-slate-400',
                         )}
                       >
                         {c.name}
@@ -727,20 +747,22 @@ export function FileBrowser() {
       </div>
 
       {/* 状态栏 */}
-      <div className="border-t border-slate-200 dark:border-slate-800 px-4 py-1.5 text-[11px] text-slate-400 flex justify-between shrink-0">
-        <span>{total} 项{showHidden ? '（含隐藏）' : ''}</span>
-        <div className="flex items-center gap-3">
+      <div className="border-t border-slate-200 dark:border-slate-800 px-4 py-1.5 text-[11px] text-slate-400 flex justify-between gap-3 shrink-0 min-w-0 overflow-hidden">
+        <span className="shrink-0">{total} 项{showHidden ? '（含隐藏）' : ''}</span>
+        <div className="flex items-center gap-3 min-w-0">
           {clipboard && clipboard.paths.length > 0 && (
             <button
               onClick={clearClipboard}
-              className="flex items-center gap-1 hover:text-slate-600 dark:hover:text-slate-300"
+              className="flex items-center gap-1 hover:text-slate-600 dark:hover:text-slate-300 shrink-0"
               title="点击清空剪贴板"
             >
               {clipboard.mode === 'cut' ? <Scissors className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
               <span>剪贴板 {clipboard.paths.length} 项</span>
             </button>
           )}
-          <span>{selectedEntries.length > 1 ? `已选 ${selectedEntries.length} 项` : singleSelected ? singleSelected.name : currentPath}</span>
+          <span className="min-w-0 truncate" title={selectedEntries.length > 1 ? undefined : singleSelected ? singleSelected.name : currentPath}>
+            {selectedEntries.length > 1 ? `已选 ${selectedEntries.length} 项` : singleSelected ? singleSelected.name : currentPath}
+          </span>
         </div>
       </div>
 
@@ -753,6 +775,18 @@ export function FileBrowser() {
 
       {menu && (
         <ContextMenu x={menu.x} y={menu.y} items={menuItems()} onClose={() => setMenu(null)} />
+      )}
+      {crumbMenu && collapsedCrumbs.length > 0 && (
+        <ContextMenu
+          x={crumbMenu.x}
+          y={crumbMenu.y}
+          items={collapsedCrumbs.map((c) => ({
+            label: c.name,
+            icon: <FolderOpen className="w-4 h-4" />,
+            onClick: () => navigate(c.path),
+          }))}
+          onClose={() => setCrumbMenu(null)}
+        />
       )}
       {propsTarget && (
         <PropertiesModal
