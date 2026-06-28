@@ -19,6 +19,7 @@ import {
   Eye, EyeOff, ArrowDownAZ, ArrowUpAZ, LayoutGrid, List as ListIcon,
   Link2, AlertTriangle, Loader2, FolderOpen, ExternalLink,
   FolderPlus, FilePlus, Pencil, Trash2, Copy, Scissors, ClipboardPaste, Star, Upload,
+  ZoomIn, ZoomOut,
 } from 'lucide-react';
 import { useBookmarkStore } from '../bookmarkStore';
 
@@ -62,7 +63,7 @@ export function FileBrowser() {
     searchSelected, selectOneHit, toggleHit, rangeHit, selectAllHits, clearHitSelection,
     clipboard, copyToClipboard, cutToClipboard, copyPathsToClipboard, cutPathsToClipboard, paste, clearClipboard,
   } = useFsStore();
-  const { viewMode, setViewMode } = useStore();
+  const { viewMode, viewScale, setViewMode, zoomIn, zoomOut, resetViewScale } = useStore();
   const addBookmark = useBookmarkStore((s) => s.add);
   const enqueueUpload = useUploadStore((s) => s.enqueue);
   const startDownload = useDownloadStore((s) => s.start);
@@ -609,19 +610,39 @@ export function FileBrowser() {
               title={order === 'asc' ? '升序' : '降序'}>
               {order === 'asc' ? <ArrowDownAZ className="w-[18px] h-[18px]" /> : <ArrowUpAZ className="w-[18px] h-[18px]" />}
             </button>
-            <button onClick={refresh}
-              disabled={searchOpen}
-              className="p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed"
-              title="刷新">
-              <RefreshCw className={cn('w-[18px] h-[18px]', loading && 'animate-spin')} />
-            </button>
             <div className="w-px h-5 bg-slate-200 dark:bg-slate-700 mx-1" />
             <button onClick={() => setViewMode(viewMode === 'grid' ? 'list' : 'grid')}
               disabled={searchOpen}
               className="p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed"
-              title="切换视图">
+              title={viewMode === 'grid' ? '切换到列表视图' : '切换到图标视图'}>
               {viewMode === 'grid' ? <ListIcon className="w-[18px] h-[18px]" /> : <LayoutGrid className="w-[18px] h-[18px]" />}
             </button>
+            <div className="flex items-center rounded-lg bg-slate-100 dark:bg-slate-800 p-0.5 ml-1">
+              <button
+                onClick={zoomOut}
+                disabled={searchOpen || viewScale <= 0.75}
+                className="p-1.5 text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 rounded-md disabled:opacity-30 disabled:cursor-not-allowed"
+                title="缩小视图"
+              >
+                <ZoomOut className="w-4 h-4" />
+              </button>
+              <button
+                onClick={resetViewScale}
+                disabled={searchOpen}
+                className="min-w-12 px-1.5 py-1 text-[11px] tabular-nums text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 rounded-md disabled:opacity-30 disabled:cursor-not-allowed"
+                title="重置缩放"
+              >
+                {Math.round(viewScale * 100)}%
+              </button>
+              <button
+                onClick={zoomIn}
+                disabled={searchOpen || viewScale >= 1.4}
+                className="p-1.5 text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 rounded-md disabled:opacity-30 disabled:cursor-not-allowed"
+                title="放大视图"
+              >
+                <ZoomIn className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -699,9 +720,9 @@ export function FileBrowser() {
         ) : entries.length === 0 ? (
           <div className="flex items-center justify-center h-full text-slate-400 text-sm">此目录为空</div>
         ) : viewMode === 'grid' ? (
-          <GridView entries={entries} selected={selected} cutNames={cutNames} onItemClick={handleItemClick} onOpen={openEntry} onContextMenu={onItemContextMenu} />
+          <GridView entries={entries} selected={selected} cutNames={cutNames} viewScale={viewScale} onItemClick={handleItemClick} onOpen={openEntry} onContextMenu={onItemContextMenu} />
         ) : (
-          <ListView entries={entries} selected={selected} cutNames={cutNames} onItemClick={handleItemClick} onOpen={openEntry} onContextMenu={onItemContextMenu} />
+          <ListView entries={entries} selected={selected} cutNames={cutNames} viewScale={viewScale} onItemClick={handleItemClick} onOpen={openEntry} onContextMenu={onItemContextMenu} />
         )}
       </div>
 
@@ -811,14 +832,17 @@ interface ViewProps {
   entries: FileEntry[];
   selected: Set<string>;
   cutNames: Set<string>;
+  viewScale: number;
   onItemClick: (entry: FileEntry, e: React.MouseEvent) => void;
   onOpen: (entry: FileEntry) => void;
   onContextMenu: (e: React.MouseEvent, entry: FileEntry) => void;
 }
 
-function GridView({ entries, selected, cutNames, onItemClick, onOpen, onContextMenu }: ViewProps) {
+function GridView({ entries, selected, cutNames, viewScale, onItemClick, onOpen, onContextMenu }: ViewProps) {
+  const minWidth = Math.round(100 * viewScale);
+  const iconSize = Math.round(40 * viewScale);
   return (
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(100px,1fr))] gap-2">
+    <div className="grid gap-2.5" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${minWidth}px, 1fr))` }}>
       {entries.map((entry) => (
         <button
           key={entry.name}
@@ -826,21 +850,25 @@ function GridView({ entries, selected, cutNames, onItemClick, onOpen, onContextM
           onDoubleClick={() => onOpen(entry)}
           onContextMenu={(e) => onContextMenu(e, entry)}
           className={cn(
-            'flex flex-col items-center p-3 rounded-xl transition-colors group relative select-none focus:outline-none',
+            'flex flex-col items-center rounded-xl transition-colors group relative select-none focus:outline-none',
             selected.has(entry.name)
               ? 'bg-blue-50 dark:bg-blue-900/30'
               : 'hover:bg-slate-50 dark:hover:bg-slate-900',
             cutNames.has(entry.name) && 'opacity-50',
           )}
+          style={{ padding: `${Math.round(12 * viewScale)}px` }}
         >
           <div className="relative">
-            <FileIcon kind={kindOf(entry)} className="w-10 h-10 mb-1.5" />
+            <FileIcon kind={kindOf(entry)} className="mb-1.5" style={{ width: iconSize, height: iconSize }} />
             {entry.isSymlink && (
               <Link2 className="w-3 h-3 absolute -bottom-0.5 -right-1 text-slate-400 bg-white dark:bg-slate-950 rounded-full" />
             )}
           </div>
-          <span className={cn('text-xs text-center break-all line-clamp-2',
-            entry.unreachable ? 'text-slate-300 dark:text-slate-600 line-through' : 'text-slate-700 dark:text-slate-300')}>
+          <span
+            className={cn('text-center break-all line-clamp-2',
+              entry.unreachable ? 'text-slate-300 dark:text-slate-600 line-through' : 'text-slate-700 dark:text-slate-300')}
+            style={{ fontSize: `${12 * viewScale}px`, lineHeight: 1.25 }}
+          >
             {entry.name}
           </span>
         </button>
@@ -849,11 +877,13 @@ function GridView({ entries, selected, cutNames, onItemClick, onOpen, onContextM
   );
 }
 
-function ListView({ entries, selected, cutNames, onItemClick, onOpen, onContextMenu }: ViewProps) {
+function ListView({ entries, selected, cutNames, viewScale, onItemClick, onOpen, onContextMenu }: ViewProps) {
+  const listScale = viewScale * 1.1;
+  const iconSize = Math.round(16 * listScale);
   return (
-    <table className="w-full text-sm">
+    <table className="w-full" style={{ fontSize: `${14 * listScale}px` }}>
       <thead>
-        <tr className="text-[11px] text-slate-400 border-b border-slate-100 dark:border-slate-800">
+        <tr className="text-slate-400 border-b border-slate-100 dark:border-slate-800" style={{ fontSize: `${11 * listScale}px` }}>
           <th className="text-left font-medium py-2 px-2">名称</th>
           <th className="text-right font-medium py-2 px-2 w-24">大小</th>
           <th className="text-left font-medium py-2 px-2 w-44 hidden sm:table-cell">修改时间</th>
@@ -875,9 +905,9 @@ function ListView({ entries, selected, cutNames, onItemClick, onOpen, onContextM
               cutNames.has(entry.name) && 'opacity-50',
             )}
           >
-            <td className="py-1.5 px-2">
-              <div className="flex items-center gap-2 min-w-0">
-                <FileIcon kind={kindOf(entry)} className="w-4 h-4 shrink-0" />
+            <td className="px-2" style={{ paddingTop: `${6 * listScale}px`, paddingBottom: `${6 * listScale}px` }}>
+              <div className="flex items-center min-w-0" style={{ gap: `${8 * listScale}px` }}>
+                <FileIcon kind={kindOf(entry)} className="shrink-0" style={{ width: iconSize, height: iconSize }} />
                 <span className={cn('truncate',
                   entry.unreachable ? 'text-slate-300 dark:text-slate-600 line-through' : 'text-slate-700 dark:text-slate-300')}>
                   {entry.name}
@@ -885,11 +915,11 @@ function ListView({ entries, selected, cutNames, onItemClick, onOpen, onContextM
                 {entry.isSymlink && <Link2 className="w-3 h-3 text-slate-400 shrink-0" />}
               </div>
             </td>
-            <td className="py-1.5 px-2 text-right text-slate-400 tabular-nums">
+            <td className="px-2 text-right text-slate-400 tabular-nums" style={{ paddingTop: `${6 * listScale}px`, paddingBottom: `${6 * listScale}px` }}>
               {entry.type === 'dir' ? '-' : formatBytes(entry.size)}
             </td>
-            <td className="py-1.5 px-2 text-slate-400 hidden sm:table-cell">{formatTime(entry.modTime)}</td>
-            <td className="py-1.5 px-2 text-slate-400 font-mono text-xs hidden md:table-cell">{entry.mode}</td>
+            <td className="px-2 text-slate-400 hidden sm:table-cell" style={{ paddingTop: `${6 * listScale}px`, paddingBottom: `${6 * listScale}px` }}>{formatTime(entry.modTime)}</td>
+            <td className="px-2 text-slate-400 font-mono hidden md:table-cell" style={{ paddingTop: `${6 * listScale}px`, paddingBottom: `${6 * listScale}px`, fontSize: `${12 * listScale}px` }}>{entry.mode}</td>
           </tr>
         ))}
       </tbody>

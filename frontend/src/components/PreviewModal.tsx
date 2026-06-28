@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useFsStore } from '../fsStore';
-import { api } from '../lib/api';
+import { api, getToken } from '../lib/api';
 import { kindOf } from '../lib/path';
 import { PreviewResult } from '../types';
 import { Modal } from './Modal';
@@ -15,6 +15,7 @@ export function PreviewModal() {
 
   const kind = previewEntry ? kindOf(previewEntry) : 'unknown';
   const isTextKind = kind === 'text' || kind === 'unknown';
+  const isPdf = kind === 'pdf';
   // 仅文本/未知类型走可编辑内容接口；媒体类型传空 path 让 hook 短路（不发请求、不挂载编辑器）。
   const ed = useFileEditor(isTextKind && previewPath ? previewPath : '');
 
@@ -127,7 +128,7 @@ export function PreviewModal() {
       isOpen={true}
       onClose={requestClose}
       title={previewEntry.name}
-      maxWidth="4xl"
+      maxWidth={isPdf ? '6xl' : '4xl'}
       contentClassName="bg-slate-50 dark:bg-slate-950/50 p-0"
       footer={footer}
     >
@@ -157,6 +158,10 @@ export function PreviewModal() {
               <audio src={inlineUrl} controls autoPlay className="w-full outline-none" />
             </div>
           </div>
+        )}
+
+        {kind === 'pdf' && (
+          <PdfPreview url={inlineUrl} title={previewEntry.name} downloadUrl={downloadUrl} />
         )}
 
         {isTextKind && (
@@ -271,6 +276,75 @@ export function PreviewModal() {
         </div>
       )}
     </Modal>
+  );
+}
+
+// PdfPreview 先用 fetch 拉取 PDF，再用 blob: URL 嵌入浏览器 PDF viewer，避免后端 X-Frame-Options: deny 拦截 iframe。
+function PdfPreview({ url, title, downloadUrl }: { url: string; title: string; downloadUrl: string }) {
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const ac = new AbortController();
+    let objectUrl: string | null = null;
+
+    const load = async () => {
+      setLoading(true);
+      setError(null);
+      setBlobUrl(null);
+      try {
+        const headers: Record<string, string> = {};
+        const token = getToken();
+        if (token) headers.Authorization = `Bearer ${token}`;
+        const resp = await fetch(url, {
+          headers,
+          credentials: 'same-origin',
+          signal: ac.signal,
+        });
+        if (!resp.ok) throw new Error(`预览失败 (HTTP ${resp.status})`);
+        const blob = await resp.blob();
+        objectUrl = URL.createObjectURL(blob.type === 'application/pdf' ? blob : new Blob([blob], { type: 'application/pdf' }));
+        setBlobUrl(objectUrl);
+      } catch (e) {
+        if (ac.signal.aborted) return;
+        setError(e instanceof Error ? e.message : 'PDF 预览失败');
+      } finally {
+        if (!ac.signal.aborted) setLoading(false);
+      }
+    };
+
+    void load();
+    return () => {
+      ac.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [url]);
+
+  return (
+    <div className="h-[72vh] bg-slate-100 dark:bg-slate-950">
+      {loading && (
+        <div className="flex h-full items-center justify-center text-slate-400">
+          <Loader2 className="w-6 h-6 animate-spin" />
+        </div>
+      )}
+      {!loading && error && (
+        <div className="h-full flex flex-col items-center justify-center text-slate-500 px-6 text-center">
+          <File className="w-12 h-12 mb-3 opacity-50" />
+          <p className="text-sm">{error}</p>
+          <a href={downloadUrl} download={title} className="mt-3 text-xs text-blue-600 hover:underline">
+            下载查看
+          </a>
+        </div>
+      )}
+      {!loading && blobUrl && (
+        <iframe
+          src={blobUrl}
+          title={title}
+          className="w-full h-full border-0 bg-white dark:bg-slate-900"
+        />
+      )}
+    </div>
   );
 }
 

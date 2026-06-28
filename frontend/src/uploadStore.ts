@@ -211,12 +211,15 @@ function patch(
   }));
 }
 
-// maybeRefresh 当上传目标为当前浏览目录时刷新列表。
+// maybeRefresh 当上传目标为当前浏览目录时刷新列表；搜索态下重跑当前搜索以纳入新文件。
 function maybeRefresh(dir: string) {
   const fs = useFsStore.getState();
-  if (fs.currentPath === dir && !fs.searchOpen) {
-    void fs.refresh();
+  if (fs.currentPath !== dir) return;
+  if (fs.searchOpen && fs.searchQuery) {
+    void fs.runSearch(fs.searchQuery);
+    return;
   }
+  void fs.refresh();
 }
 
 // uploadErrMessage 将上传错误码翻译为中文。

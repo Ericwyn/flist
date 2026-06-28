@@ -1,17 +1,28 @@
-import React, { useEffect } from 'react';
+import React, { lazy, Suspense, useEffect } from 'react';
 import { Loader2 } from 'lucide-react';
 import { Sidebar } from './components/Sidebar';
 import { FileBrowser } from './components/FileBrowser';
-import { PreviewModal } from './components/PreviewModal';
 import { LoginPage } from './components/LoginPage';
 import { TransferPanel } from './components/TransferPanel';
-import { Editor } from './components/Editor';
 import { useStore } from './store';
 import { useAuthStore } from './authStore';
+import { useFsStore } from './fsStore';
+
+const PreviewModal = lazy(() => import('./components/PreviewModal').then((mod) => ({ default: mod.PreviewModal })));
+const Editor = lazy(() => import('./components/Editor').then((mod) => ({ default: mod.Editor })));
+
+function PageLoading() {
+  return (
+    <div className="flex h-screen w-full items-center justify-center bg-[#f8fafc] dark:bg-slate-900">
+      <Loader2 className="w-6 h-6 text-blue-500 animate-spin" />
+    </div>
+  );
+}
 
 export default function App() {
   const theme = useStore((state) => state.theme);
   const { status, init } = useAuthStore();
+  const previewEntry = useFsStore((state) => state.previewEntry);
 
   // Apply initial theme
   useEffect(() => {
@@ -28,11 +39,7 @@ export default function App() {
   }, [init]);
 
   if (status === 'loading') {
-    return (
-      <div className="flex h-screen w-full items-center justify-center bg-[#f8fafc] dark:bg-slate-900">
-        <Loader2 className="w-6 h-6 text-blue-500 animate-spin" />
-      </div>
-    );
+    return <PageLoading />;
   }
 
   if (status === 'unauthenticated') {
@@ -42,14 +49,22 @@ export default function App() {
   // 编辑器独立页面：/editor?path=...（支持新窗口打开，同源复用登录态）。
   // 与文件浏览主界面互斥渲染，避免侧边栏 / 浏览器列表抢占整屏。
   if (window.location.pathname === '/editor') {
-    return <Editor />;
+    return (
+      <Suspense fallback={<PageLoading />}>
+        <Editor />
+      </Suspense>
+    );
   }
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[#f8fafc] dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-sans">
       <Sidebar />
       <FileBrowser />
-      <PreviewModal />
+      {previewEntry && (
+        <Suspense fallback={null}>
+          <PreviewModal />
+        </Suspense>
+      )}
       <TransferPanel />
     </div>
   );

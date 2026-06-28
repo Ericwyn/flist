@@ -1,19 +1,62 @@
 import { create } from 'zustand';
 
+type Theme = 'light' | 'dark';
+type ViewMode = 'grid' | 'list';
+
+const UI_PREFS_KEY = 'flist.uiPrefs';
+const VIEW_SCALE_MIN = 0.75;
+const VIEW_SCALE_MAX = 1.4;
+const VIEW_SCALE_STEP = 0.1;
+const DEFAULT_VIEW_SCALE = 1;
+
+function clampViewScale(scale: number): number {
+  return Math.min(VIEW_SCALE_MAX, Math.max(VIEW_SCALE_MIN, Number(scale.toFixed(2))));
+}
+
+function loadUiPrefs(): Pick<UIState, 'viewMode' | 'viewScale'> {
+  try {
+    const raw = localStorage.getItem(UI_PREFS_KEY);
+    if (!raw) return { viewMode: 'grid', viewScale: DEFAULT_VIEW_SCALE };
+    const parsed = JSON.parse(raw) as Partial<Pick<UIState, 'viewMode' | 'viewScale'>>;
+    return {
+      viewMode: parsed.viewMode === 'list' || parsed.viewMode === 'grid' ? parsed.viewMode : 'grid',
+      viewScale: typeof parsed.viewScale === 'number' ? clampViewScale(parsed.viewScale) : DEFAULT_VIEW_SCALE,
+    };
+  } catch {
+    return { viewMode: 'grid', viewScale: DEFAULT_VIEW_SCALE };
+  }
+}
+
+function saveUiPrefs(prefs: Pick<UIState, 'viewMode' | 'viewScale'>) {
+  try {
+    localStorage.setItem(UI_PREFS_KEY, JSON.stringify(prefs));
+  } catch {
+    // 忽略隐私模式或存储配额导致的失败，当前会话内状态仍然有效。
+  }
+}
+
 // UIState 仅保存与文件系统无关的界面偏好；文件浏览状态见 fsStore.ts。
 interface UIState {
-  theme: 'light' | 'dark';
-  viewMode: 'grid' | 'list';
+  theme: Theme;
+  viewMode: ViewMode;
+  viewScale: number;
   iconSize: 'small' | 'medium' | 'large';
 
   toggleTheme: () => void;
-  setViewMode: (mode: 'grid' | 'list') => void;
+  setViewMode: (mode: ViewMode) => void;
+  setViewScale: (scale: number) => void;
+  zoomIn: () => void;
+  zoomOut: () => void;
+  resetViewScale: () => void;
   setIconSize: (size: 'small' | 'medium' | 'large') => void;
 }
 
-export const useStore = create<UIState>((set) => ({
+const initialPrefs = loadUiPrefs();
+
+export const useStore = create<UIState>((set, get) => ({
   theme: 'light',
-  viewMode: 'grid',
+  viewMode: initialPrefs.viewMode,
+  viewScale: initialPrefs.viewScale,
   iconSize: 'medium',
 
   toggleTheme: () =>
@@ -27,6 +70,17 @@ export const useStore = create<UIState>((set) => ({
       return { theme: next };
     }),
 
-  setViewMode: (mode) => set({ viewMode: mode }),
+  setViewMode: (mode) => {
+    set({ viewMode: mode });
+    saveUiPrefs({ viewMode: mode, viewScale: get().viewScale });
+  },
+  setViewScale: (scale) => {
+    const next = clampViewScale(scale);
+    set({ viewScale: next });
+    saveUiPrefs({ viewMode: get().viewMode, viewScale: next });
+  },
+  zoomIn: () => get().setViewScale(get().viewScale + VIEW_SCALE_STEP),
+  zoomOut: () => get().setViewScale(get().viewScale - VIEW_SCALE_STEP),
+  resetViewScale: () => get().setViewScale(DEFAULT_VIEW_SCALE),
   setIconSize: (size) => set({ iconSize: size }),
 }));

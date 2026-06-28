@@ -25,6 +25,7 @@ export function kindOf(entry: Pick<FileEntry, 'name' | 'type'>): FileKind {
   if (imageExts.has(ext)) return 'image';
   if (videoExts.has(ext)) return 'video';
   if (audioExts.has(ext)) return 'audio';
+  if (ext === 'pdf') return 'pdf';
   if (textExts.has(ext)) return 'text';
   return 'unknown';
 }
