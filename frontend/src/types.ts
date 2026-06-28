@@ -84,6 +84,13 @@ export interface Bookmark {
   valid: boolean; // 目标仍存在且为目录
 }
 
+export interface RecentAccessItem {
+  path: string;
+  name: string;
+  type: EntryType;
+  visitedAt: number;
+}
+
 // 文本保存乐观锁的不透明版本 token，对应后端 model.FileRevision。
 export interface FileRevision {
   token: string;

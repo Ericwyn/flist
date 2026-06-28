@@ -37,6 +37,52 @@ const formatTime = (iso: string) => {
   return d.toLocaleString();
 };
 
+const FILE_BROWSER_SCROLL_KEY = 'flist.fileBrowser.scrollPositions';
+
+function scrollStorageKey(path: string, viewMode: 'grid' | 'list'): string {
+  return `${viewMode}:${path}`;
+}
+
+function loadScrollPositions(): Record<string, number> {
+  try {
+    const raw = sessionStorage.getItem(FILE_BROWSER_SCROLL_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, number> : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveScrollPosition(path: string, viewMode: 'grid' | 'list', scrollTop: number) {
+  try {
+    const positions = loadScrollPositions();
+    positions[scrollStorageKey(path, viewMode)] = Math.max(0, Math.round(scrollTop));
+    sessionStorage.setItem(FILE_BROWSER_SCROLL_KEY, JSON.stringify(positions));
+  } catch {
+    // 忽略隐私模式或存储配额导致的失败；滚动位置仅作会话级体验优化。
+  }
+}
+
+function loadScrollPosition(path: string, viewMode: 'grid' | 'list'): number {
+  const value = loadScrollPositions()[scrollStorageKey(path, viewMode)];
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function shouldIgnoreFileBrowserShortcut(e: KeyboardEvent): boolean {
+  if (openModalCount() > 0) return true;
+
+  const target = e.target;
+  if (!(target instanceof HTMLElement)) return false;
+
+  const tag = target.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  if (target.isContentEditable) return true;
+  if (target.closest('[contenteditable="true"], .cm-editor, .cm-content')) return true;
+
+  return false;
+}
+
 interface MenuState {
   x: number;
   y: number;
@@ -63,7 +109,7 @@ export function FileBrowser() {
     searchSelected, selectOneHit, toggleHit, rangeHit, selectAllHits, clearHitSelection,
     clipboard, copyToClipboard, cutToClipboard, copyPathsToClipboard, cutPathsToClipboard, paste, clearClipboard,
   } = useFsStore();
-  const { viewMode, viewScale, setViewMode, zoomIn, zoomOut, resetViewScale } = useStore();
+  const { viewMode, viewScale, setViewMode, zoomIn, zoomOut, resetViewScale, recordRecentAccess } = useStore();
   const addBookmark = useBookmarkStore((s) => s.add);
   const enqueueUpload = useUploadStore((s) => s.enqueue);
   const startDownload = useDownloadStore((s) => s.start);
@@ -79,6 +125,8 @@ export function FileBrowser() {
   const [dragOver, setDragOver] = useState(false);
   // 隐藏的文件选择 input，用于工具栏「上传」按钮触发。
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const restoringScrollRef = useRef(false);
 
   // doUpload 把一批文件加入上传队列（目标为当前目录）。
   const doUpload = (files: FileList | File[] | null) => {
@@ -159,14 +207,42 @@ export function FileBrowser() {
   const selectedEntries = entries.filter((e) => selected.has(e.name));
   const singleSelected = selectedEntries.length === 1 ? selectedEntries[0] : null;
 
+  // 目录滚动位置按「路径 + 视图模式」做会话级恢复，避免长列表返回上级后丢失位置。
+  useEffect(() => {
+    if (searchOpen || loading || error) return;
+    const el = contentRef.current;
+    if (!el) return;
+
+    const target = loadScrollPosition(currentPath, viewMode);
+    restoringScrollRef.current = true;
+    let raf2 = 0;
+    const raf1 = window.requestAnimationFrame(() => {
+      raf2 = window.requestAnimationFrame(() => {
+        el.scrollTop = Math.min(target, Math.max(0, el.scrollHeight - el.clientHeight));
+        window.setTimeout(() => {
+          restoringScrollRef.current = false;
+        }, 0);
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(raf1);
+      if (raf2) window.cancelAnimationFrame(raf2);
+      restoringScrollRef.current = false;
+    };
+  }, [currentPath, viewMode, loading, error, searchOpen, entries.length]);
+
+  const handleContentScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    if (restoringScrollRef.current || searchOpen || loading) return;
+    saveScrollPosition(currentPath, viewMode, e.currentTarget.scrollTop);
+  };
+
   // 剪贴板快捷键：Ctrl/Cmd+C 复制、Ctrl/Cmd+X 剪切选中项，Ctrl/Cmd+V 粘贴；Ctrl/Cmd+A 全选。
   // 在搜索视图或输入框聚焦时不拦截，避免干扰文本编辑与浏览器原生复制。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
       if (searchOpen) return;
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (shouldIgnoreFileBrowserShortcut(e)) return;
       const sels = entries.filter((it) => selected.has(it.name) && !it.unreachable);
       const key = e.key.toLowerCase();
       if (key === 'a') {
@@ -194,8 +270,7 @@ export function FileBrowser() {
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       if (searchOpen) return;
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (shouldIgnoreFileBrowserShortcut(e)) return;
       const sels = entries.filter((it) => selected.has(it.name));
       if (e.key === 'F2' && !dialog) {
         if (sels.length !== 1) return;
@@ -222,8 +297,7 @@ export function FileBrowser() {
   useEffect(() => {
     if (!searchOpen) return;
     const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (shouldIgnoreFileBrowserShortcut(e)) return;
       const paths = searchResults.filter((h) => searchSelected.has(h.path)).map((h) => h.path);
       if (e.ctrlKey || e.metaKey) {
         if (e.altKey || e.shiftKey) return;
@@ -282,6 +356,7 @@ export function FileBrowser() {
     if (entry.type === 'dir') {
       navigate(full);
     } else {
+      recordRecentAccess({ path: full, name: entry.name, type: 'file' });
       openPreview(entry, full);
     }
   };
@@ -303,11 +378,13 @@ export function FileBrowser() {
 
   // openEditor 在当前窗口打开编辑器（整页切换，App 按 pathname 渲染 Editor）。
   const openEditor = (entry: FileEntry) => {
+    recordRecentAccess({ path: joinPath(currentPath, entry.name), name: entry.name, type: 'file' });
     window.location.href = editorUrl(entry);
   };
 
   // openEditorNewWindow 在新窗口打开编辑器；noopener 防止新页面反向操作本窗口。
   const openEditorNewWindow = (entry: FileEntry) => {
+    recordRecentAccess({ path: joinPath(currentPath, entry.name), name: entry.name, type: 'file' });
     window.open(editorUrl(entry), '_blank', 'noopener');
   };
 
@@ -323,6 +400,7 @@ export function FileBrowser() {
       navigate(hit.path);
       return;
     }
+    recordRecentAccess({ path: hit.path, name: hit.name, type: 'file' });
     openPreview(
       {
         name: hit.name,
@@ -680,7 +758,8 @@ export function FileBrowser() {
       />
 
       {/* 内容区（兼作拖拽上传放置区） */}
-      <div className="flex-1 overflow-auto p-4 relative"
+      <div ref={contentRef} className="flex-1 overflow-auto p-4 relative"
+        onScroll={handleContentScroll}
         onClick={() => clearSelection()}
         onContextMenu={onBackgroundContextMenu}
         onDragOver={(e) => {

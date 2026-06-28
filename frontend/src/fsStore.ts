@@ -3,6 +3,7 @@ import { api, ApiError } from './lib/api';
 import { FileEntry, SearchHit, Clipboard } from './types';
 import { parentPath, joinPath } from './lib/path';
 import { useAuthStore } from './authStore';
+import { useStore } from './store';
 
 type SortKey = 'name' | 'size' | 'mtime';
 type SortOrder = 'asc' | 'desc';
@@ -125,6 +126,12 @@ function urlToPath(pathname: string): string {
   }
 }
 
+function pathName(p: string): string {
+  if (p === '/' || p === '') return '我的文件';
+  const trimmed = p.replace(/\/$/, '');
+  return trimmed.slice(trimmed.lastIndexOf('/') + 1) || trimmed;
+}
+
 // 搜索历史持久化：保存最近搜索词到 localStorage，跨会话保留。
 const SEARCH_HISTORY_KEY = 'flist.searchHistory';
 const SEARCH_HISTORY_MAX = 10;
@@ -238,6 +245,7 @@ export const useFsStore = create<FsState>((set, get) => ({
           historyIndex,
         };
       });
+      useStore.getState().recordRecentAccess({ path: res.path, name: pathName(res.path), type: 'dir' });
     } catch (e) {
       handleError(e);
       const msg = e instanceof Error ? e.message : '加载失败';

@@ -1,9 +1,12 @@
 import { create } from 'zustand';
+import { RecentAccessItem } from './types';
 
 type Theme = 'light' | 'dark';
 type ViewMode = 'grid' | 'list';
 
 const UI_PREFS_KEY = 'flist.uiPrefs';
+const RECENT_ACCESS_KEY = 'flist.recentAccess';
+const RECENT_ACCESS_LIMIT = 10;
 const VIEW_SCALE_MIN = 0.75;
 const VIEW_SCALE_MAX = 1.4;
 const VIEW_SCALE_STEP = 0.1;
@@ -35,12 +38,41 @@ function saveUiPrefs(prefs: Pick<UIState, 'viewMode' | 'viewScale'>) {
   }
 }
 
+function loadRecentAccess(): RecentAccessItem[] {
+  try {
+    const raw = localStorage.getItem(RECENT_ACCESS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item): item is RecentAccessItem => (
+        item &&
+        typeof item.path === 'string' &&
+        typeof item.name === 'string' &&
+        (item.type === 'file' || item.type === 'dir') &&
+        typeof item.visitedAt === 'number'
+      ))
+      .slice(0, RECENT_ACCESS_LIMIT);
+  } catch {
+    return [];
+  }
+}
+
+function saveRecentAccess(items: RecentAccessItem[]) {
+  try {
+    localStorage.setItem(RECENT_ACCESS_KEY, JSON.stringify(items.slice(0, RECENT_ACCESS_LIMIT)));
+  } catch {
+    // 忽略持久化失败，最近访问仍在当前内存态可用。
+  }
+}
+
 // UIState 仅保存与文件系统无关的界面偏好；文件浏览状态见 fsStore.ts。
 interface UIState {
   theme: Theme;
   viewMode: ViewMode;
   viewScale: number;
   iconSize: 'small' | 'medium' | 'large';
+  recentAccess: RecentAccessItem[];
 
   toggleTheme: () => void;
   setViewMode: (mode: ViewMode) => void;
@@ -49,15 +81,19 @@ interface UIState {
   zoomOut: () => void;
   resetViewScale: () => void;
   setIconSize: (size: 'small' | 'medium' | 'large') => void;
+  recordRecentAccess: (item: Omit<RecentAccessItem, 'visitedAt'>) => void;
+  clearRecentAccess: () => void;
 }
 
 const initialPrefs = loadUiPrefs();
+const initialRecentAccess = loadRecentAccess();
 
 export const useStore = create<UIState>((set, get) => ({
   theme: 'light',
   viewMode: initialPrefs.viewMode,
   viewScale: initialPrefs.viewScale,
   iconSize: 'medium',
+  recentAccess: initialRecentAccess,
 
   toggleTheme: () =>
     set((state) => {
@@ -83,4 +119,17 @@ export const useStore = create<UIState>((set, get) => ({
   zoomOut: () => get().setViewScale(get().viewScale - VIEW_SCALE_STEP),
   resetViewScale: () => get().setViewScale(DEFAULT_VIEW_SCALE),
   setIconSize: (size) => set({ iconSize: size }),
+  recordRecentAccess: (item) => {
+    const nextItem: RecentAccessItem = { ...item, visitedAt: Date.now() };
+    const next = [
+      nextItem,
+      ...get().recentAccess.filter((x) => x.path !== item.path),
+    ].slice(0, RECENT_ACCESS_LIMIT);
+    set({ recentAccess: next });
+    saveRecentAccess(next);
+  },
+  clearRecentAccess: () => {
+    set({ recentAccess: [] });
+    saveRecentAccess([]);
+  },
 }));

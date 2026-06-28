@@ -1,20 +1,24 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { HardDrive, Home, Settings, StarOff, Pencil, Trash2, Plus, GripVertical, AlertTriangle } from 'lucide-react';
+import { HardDrive, Home, Settings, StarOff, Pencil, Trash2, Plus, AlertTriangle } from 'lucide-react';
 import { useFsStore } from '../fsStore';
 import { useAuthStore } from '../authStore';
 import { useBookmarkStore } from '../bookmarkStore';
+import { useStore } from '../store';
 import { cn, formatBytes } from '../lib/utils';
 import { api } from '../lib/api';
 import { SettingsModal } from './SettingsModal';
 import { InputModal } from './InputModal';
 import { ConfirmModal } from './ConfirmModal';
 import { ContextMenu, MenuItem } from './ContextMenu';
-import { Bookmark, SpaceInfo } from '../types';
+import { Bookmark, RecentAccessItem, SpaceInfo } from '../types';
+import { FileIcon } from './FileIcon';
+import { kindOf } from '../lib/path';
 
 export function Sidebar() {
-  const { currentPath, navigate, spaceVersion } = useFsStore();
+  const { currentPath, navigate, spaceVersion, openPreview } = useFsStore();
   const { user } = useAuthStore();
   const { items, load, add, rename, remove, reorder } = useBookmarkStore();
+  const { recentAccess, clearRecentAccess, recordRecentAccess } = useStore();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   // 路径级容量：随当前目录与写操作（spaceVersion）刷新。
@@ -100,6 +104,25 @@ export function Sidebar() {
       { label: '重命名', icon: <Pencil className="w-4 h-4" />, onClick: () => setRenameTarget(menu.bm) },
       { label: '删除收藏', icon: <Trash2 className="w-4 h-4" />, danger: true, onClick: () => setDeleteTarget(menu.bm) },
     ];
+  };
+
+  const onClickRecent = (item: RecentAccessItem) => {
+    if (item.type === 'dir') {
+      navigate(item.path);
+      return;
+    }
+    recordRecentAccess({ path: item.path, name: item.name, type: item.type });
+    openPreview(
+      {
+        name: item.name,
+        type: 'file',
+        size: 0,
+        mode: '',
+        modTime: '',
+        isSymlink: false,
+      },
+      item.path,
+    );
   };
 
   return (
@@ -189,7 +212,15 @@ export function Sidebar() {
                     {!bm.valid && (
                       <AlertTriangle className="w-3.5 h-3.5 mr-2 shrink-0 text-slate-300 dark:text-slate-600" />
                     )}
-                    <span className={cn('truncate', !bm.valid && 'line-through')}>{bm.name}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className={cn('block truncate leading-4', !bm.valid && 'line-through')}>{bm.name}</span>
+                      <span className={cn('block truncate text-[10px] leading-3 font-normal',
+                        currentPath === bm.path && bm.valid
+                          ? 'text-blue-500 dark:text-blue-300/80'
+                          : 'text-slate-400 dark:text-slate-500')}>
+                        {bm.path}
+                      </span>
+                    </span>
                   </button>
                   <button
                     onClick={(e) => {
@@ -202,6 +233,57 @@ export function Sidebar() {
                     <StarOff className="w-3.5 h-3.5" />
                   </button>
                 </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* 最近访问 */}
+        <section className="mt-5">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-[11px] font-medium text-slate-400 dark:text-slate-500 uppercase tracking-wider">
+              最近访问
+            </h3>
+            {recentAccess.length > 0 && (
+              <button
+                onClick={clearRecentAccess}
+                title="清空最近访问"
+                className="text-[10px] px-1.5 py-0.5 rounded text-slate-400 hover:text-rose-500 hover:bg-white dark:hover:bg-slate-800 transition-colors"
+              >
+                清空
+              </button>
+            )}
+          </div>
+
+          {recentAccess.length === 0 ? (
+            <p className="text-[11px] text-slate-400 dark:text-slate-600 px-2 py-1">
+              暂无记录
+            </p>
+          ) : (
+            <div className="space-y-0.5">
+              {recentAccess.map((item) => (
+                <button
+                  key={item.path}
+                  onClick={() => onClickRecent(item)}
+                  className={cn(
+                    'w-full flex items-center gap-2 px-1.5 py-1.5 rounded-lg text-sm text-left transition-colors',
+                    item.type === 'dir' && currentPath === item.path
+                      ? 'bg-blue-50 text-blue-700 font-medium dark:bg-blue-900/40 dark:text-blue-300'
+                      : 'text-slate-600 dark:text-slate-400 hover:bg-white dark:hover:bg-slate-800',
+                  )}
+                  title={item.path}
+                >
+                  <FileIcon kind={kindOf({ name: item.name, type: item.type })} className="w-4 h-4 shrink-0" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate leading-4">{item.name}</span>
+                    <span className={cn('block truncate text-[10px] leading-3 font-normal',
+                      item.type === 'dir' && currentPath === item.path
+                        ? 'text-blue-500 dark:text-blue-300/80'
+                        : 'text-slate-400 dark:text-slate-500')}>
+                      {item.path}
+                    </span>
+                  </span>
+                </button>
               ))}
             </div>
           )}
