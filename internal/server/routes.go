@@ -36,7 +36,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 	r.Use(mw.SecurityHeaders)
 
 	authHandler := handler.NewAuthHandler(d.Auth, d.Config.SessionTTL)
-	systemHandler := handler.NewSystemHandler()
+	systemHandler := handler.NewSystemHandler(d.Files)
 	fileHandler := handler.NewFileHandler(d.Files, d.Uploads, d.Logger)
 	bookmarkHandler := handler.NewBookmarkHandler(d.Bookmarks, d.Logger)
 
@@ -57,6 +57,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 			protected.Get("/auth/me", authHandler.Me)
 			protected.Put("/auth/password", authHandler.ChangePassword)
 			protected.Put("/auth/username", authHandler.ChangeUsername)
+
+			// Phase 6 系统信息（磁盘用量；只读，仅受全局限流）。
+			protected.Get("/system/info", systemHandler.Info)
 
 			// Phase 1 只读文件接口。
 			protected.Get("/fs/list", fileHandler.List)

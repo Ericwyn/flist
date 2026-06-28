@@ -11,6 +11,7 @@ import { ConfirmModal } from './ConfirmModal';
 import { SearchBar } from './SearchBar';
 import { cn } from '../lib/utils';
 import { kindOf, joinPath, breadcrumbs, parentPath } from '../lib/path';
+import { closeTopModal, subscribeModal, openModalCount } from '../lib/modalRegistry';
 import { api } from '../lib/api';
 import { FileEntry, SearchHit } from '../types';
 import {
@@ -91,10 +92,50 @@ export function FileBrowser() {
     window.setTimeout(() => setToast((cur) => (cur === msg ? null : cur)), 3000);
   };
 
-  // 挂载时按 URL 恢复目录，并监听浏览器物理前进/后退（popstate）。
+  // 挂载时按 URL 恢复目录，并协调浏览器物理前进/后退（popstate）与弹窗。
+  //
+  // 守卫历史方案：弹窗打开时在当前 URL 之上压入一枚「同址守卫」历史条目，维持不变式
+  // ——「只要有弹窗打开，当前位置之上/即为一枚与当前 URL 相同的守卫」。物理返回先消费守卫
+  // （前后 URL 相同，地址栏不跳动、不切目录），并关闭顶层弹窗；经 X/遮罩/Esc/按钮关闭时，
+  // 主动回退一格把守卫清掉。这样彻底避免「先跳到目标目录、再被巻回」的地址栏闪跳。
   useEffect(() => {
     initFromUrl();
+
+    let guardActive = false; // 当前是否已压入守卫
+    let cleaningGuard = false; // 主动回退清理守卫时，吞掉随之而来的 popstate
+
+    const pushGuard = () => {
+      // 用与当前相同的 state 与 URL 压栈：即便日后 forward 命中它，也只触发同址 no-op。
+      window.history.pushState(window.history.state, '', window.location.href);
+      guardActive = true;
+    };
+
+    // 弹窗栈变化：保证「有弹窗时恒有一枚守卫」。
+    const unsub = subscribeModal(() => {
+      const count = openModalCount();
+      if (count > 0 && !guardActive) {
+        pushGuard();
+      } else if (count === 0 && guardActive) {
+        // 弹窗经非物理返回方式关闭（X / 遮罩 / Esc / 按钮）：仍停在守卫上，回退一格消费掉。
+        guardActive = false;
+        cleaningGuard = true;
+        window.history.back();
+      }
+    });
+
     const onPop = (e: PopStateEvent) => {
+      if (cleaningGuard) {
+        // 这是上面主动 back() 清理守卫触发的 popstate，忽略。
+        cleaningGuard = false;
+        return;
+      }
+      if (guardActive) {
+        // 物理前进/后退消费了守卫：关闭顶层弹窗，不切换底层目录。
+        // 若仍有堆叠弹窗，subscribeModal 回调会立即补压一枚新守卫，维持不变式。
+        guardActive = false;
+        closeTopModal();
+        return;
+      }
       const st = e.state as { index?: number; path?: string } | null;
       if (st && typeof st.path === 'string' && typeof st.index === 'number') {
         restore(st.path, st.index);
@@ -103,8 +144,12 @@ export function FileBrowser() {
         restore('/', 0);
       }
     };
+
     window.addEventListener('popstate', onPop);
-    return () => window.removeEventListener('popstate', onPop);
+    return () => {
+      window.removeEventListener('popstate', onPop);
+      unsub();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

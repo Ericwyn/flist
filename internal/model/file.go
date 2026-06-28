@@ -83,3 +83,10 @@ type UploadCompleteResult struct {
 	Path    string `json:"path"`              // 落盘后的 API 路径
 	Missing []int  `json:"missing,omitempty"` // 缺片时返回，便于前端补传
 }
+
+// SystemInfo 是 GET /api/system/info 的返回体（Phase 6）。
+type SystemInfo struct {
+	DiskTotal uint64 `json:"disk_total"` // 文件系统总容量（字节）
+	DiskUsed  uint64 `json:"disk_used"`  // 已用（total - free，字节）
+	DiskFree  uint64 `json:"disk_free"`  // 可用（字节）
+}

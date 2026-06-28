@@ -2,7 +2,7 @@
 import {
   FileEntry, ListResult, PreviewResult, ListOptions,
   OpResult, SearchResult, SearchHit, SearchOptions, Bookmark,
-  UploadInitResult,
+  UploadInitResult, DiskInfo,
 } from '../types';
 import { parentPath, joinPath } from './path';
 
@@ -393,6 +393,18 @@ export const api = {
       });
     },
   },
+
+  system: {
+    // info 获取 root 所在文件系统的磁盘用量（Phase 6）。
+    async info(): Promise<DiskInfo> {
+      const raw = await request<RawSystemInfo>('/api/system/info');
+      return {
+        total: raw.disk_total,
+        used: raw.disk_used,
+        free: raw.disk_free,
+      };
+    },
+  },
 };
 
 // parseContentDispositionFilename 从 Content-Disposition 头解析文件名，
@@ -513,4 +525,10 @@ function mapBookmark(r: RawBookmark): Bookmark {
     createdAt: r.created_at,
     valid: r.valid,
   };
+}
+
+interface RawSystemInfo {
+  disk_total: number;
+  disk_used: number;
+  disk_free: number;
 }

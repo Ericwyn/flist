@@ -280,6 +280,16 @@ func (s *FileService) avoidConflict(ctx context.Context, dir, base string) strin
 	return target // 超限：回退原名，由 backend.Copy/Move 返回 ErrExists
 }
 
+// Usage 返回 apiPath 所在存储的总容量与可用空间（Phase 6 系统信息）。
+// 驱动未实现 Usager（如纯虚拟根 Mux）时返回 storage.ErrNotSupported。
+func (s *FileService) Usage(ctx context.Context, apiPath string) (total, free uint64, err error) {
+	u, ok := s.backend.(storage.Usager)
+	if !ok {
+		return 0, 0, storage.ErrNotSupported
+	}
+	return u.Usage(ctx, util.CleanAPIPath(apiPath))
+}
+
 // checkSpace 在复制前预检目标存储可用空间（仅当驱动实现 Usager）。
 // 无法判断（不支持 Usager / 查询失败 / 计算源大小失败）时保守放行，交由实际操作处理。
 func (s *FileService) checkSpace(ctx context.Context, src, dstDir string) error {

@@ -3,18 +3,22 @@ import { HardDrive, Home, Settings, StarOff, Pencil, Trash2, Plus, GripVertical,
 import { useFsStore } from '../fsStore';
 import { useAuthStore } from '../authStore';
 import { useBookmarkStore } from '../bookmarkStore';
-import { cn } from '../lib/utils';
+import { cn, formatBytes } from '../lib/utils';
+import { api } from '../lib/api';
 import { SettingsModal } from './SettingsModal';
 import { InputModal } from './InputModal';
 import { ConfirmModal } from './ConfirmModal';
 import { ContextMenu, MenuItem } from './ContextMenu';
-import { Bookmark } from '../types';
+import { Bookmark, DiskInfo } from '../types';
 
 export function Sidebar() {
   const { currentPath, navigate } = useFsStore();
   const { user } = useAuthStore();
   const { items, load, add, rename, remove, reorder } = useBookmarkStore();
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // 磁盘用量（Phase 6），登录后加载。
+  const [disk, setDisk] = useState<DiskInfo | null>(null);
 
   // 收藏夹相关弹窗 / 菜单状态。
   const [renameTarget, setRenameTarget] = useState<Bookmark | null>(null);
@@ -29,6 +33,14 @@ export function Sidebar() {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 登录后加载磁盘用量（驱动不支持时静默忽略，不展示）。
+  useEffect(() => {
+    api.system
+      .info()
+      .then(setDisk)
+      .catch(() => setDisk(null));
   }, []);
 
   // 当前目录是否已收藏（用于「收藏当前目录」按钮状态）。
@@ -171,9 +183,36 @@ export function Sidebar() {
             </div>
           )}
         </section>
-
-        {/* 最近访问、磁盘用量（Phase 6）将在后续阶段接入。 */}
       </div>
+
+      {/* 磁盘用量（Phase 6）：常驻底部状态栏，不随收藏夹滚动。 */}
+      {disk && disk.total > 0 && (
+        <div className="px-3 py-2.5 border-t border-slate-200 dark:border-slate-800">
+          <div className="flex items-center text-slate-600 dark:text-slate-400 mb-1.5">
+            <HardDrive className="w-3.5 h-3.5 mr-2 shrink-0 opacity-80" />
+            <span className="text-[11px] truncate">
+              {formatBytes(disk.total)}
+            </span>
+            <span className="text-[11px] text-slate-400 dark:text-slate-600 ml-auto pl-2 shrink-0">
+              剩余 {formatBytes(disk.free)}
+            </span>
+          </div>
+          <div
+            className="h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden cursor-help"
+            title={`已用 ${formatBytes(disk.used)}（${Math.round((disk.used / disk.total) * 100)}%）`}
+          >
+            <div
+              className={cn(
+                'h-full rounded-full transition-all duration-300',
+                disk.used / disk.total >= 0.9
+                  ? 'bg-rose-500 dark:bg-rose-400'
+                  : 'bg-blue-600 dark:bg-blue-400',
+              )}
+              style={{ width: `${Math.min(100, Math.round((disk.used / disk.total) * 100))}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       <div className="px-3 py-3 border-t border-slate-200 dark:border-slate-800">
         <button

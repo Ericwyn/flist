@@ -249,6 +249,13 @@ export const useFsStore = create<FsState>((set, get) => ({
 
   // restore 由 popstate 调用：跳转到浏览器历史 state 指向的路径与索引，不再二次入栈。
   restore: (path, index) => {
+    // 落点与当前目录相同时（如弹窗拦截物理前进/后退后的历史复位）：仅校正索引与 URL，
+    // 跳过重复列目录，避免无谓的网络刷新与列表闪烁（大目录列举成本高）。
+    if (path === get().currentPath) {
+      set({ historyIndex: index });
+      window.history.replaceState({ index, path }, '', pathToUrl(path));
+      return;
+    }
     set({ historyIndex: index });
     get().navigate(path, false);
   },

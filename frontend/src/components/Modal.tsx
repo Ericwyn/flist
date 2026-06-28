@@ -1,7 +1,8 @@
-import React, { ReactNode } from 'react';
+import React, { ReactNode, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { nextModalId, registerModal, unregisterModal } from '../lib/modalRegistry';
 
 interface ModalProps {
   isOpen: boolean;
@@ -15,6 +16,22 @@ interface ModalProps {
 }
 
 export function Modal({ isOpen, onClose, title, children, footer, maxWidth = 'sm', className, contentClassName }: ModalProps) {
+  // 把当前 onClose 存入 ref，使注册到弹窗栈的 closer 始终调用最新的处理函数。
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const idRef = useRef<number>();
+  if (idRef.current === undefined) idRef.current = nextModalId();
+
+  // 打开时注册到弹窗栈（供物理前进/后退拦截），关闭/卸载时移除。
+  useEffect(() => {
+    const id = idRef.current!;
+    if (isOpen) {
+      registerModal(id, () => onCloseRef.current());
+      return () => unregisterModal(id);
+    }
+    unregisterModal(id);
+  }, [isOpen]);
+
   const maxWidthClass = {
     'sm': 'max-w-[320px]',
     'md': 'max-w-md',

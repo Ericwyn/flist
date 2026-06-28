@@ -84,6 +84,13 @@ export interface Bookmark {
   valid: boolean; // 目标仍存在且为目录
 }
 
+// 磁盘用量信息，对应后端 model.SystemInfo（Phase 6）。
+export interface DiskInfo {
+  total: number; // 文件系统总容量（字节）
+  used: number; // 已用（字节）
+  free: number; // 可用（字节）
+}
+
 // 剪贴板状态：复制 / 剪切两态，承载待粘贴的路径集合。
 export interface Clipboard {
   mode: 'copy' | 'cut';
