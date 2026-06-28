@@ -4,7 +4,7 @@ import { api, ApiError } from '../lib/api';
 import { useAuthStore } from '../authStore';
 import { useStore } from '../store';
 import { cn } from '../lib/utils';
-import { User, Lock, Palette, LogOut, Sun, Moon, Loader2, Check, History, Shield } from 'lucide-react';
+import { User, Lock, Palette, LogOut, Sun, Moon, Loader2, Check, Shield, PanelLeft } from 'lucide-react';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -35,31 +35,74 @@ function errMessage(e: unknown, map: Record<number, string>): string {
 // 应用版本号（简单展示用，发版时手动同步）。
 const APP_VERSION = 'v0.1.5';
 
-// SettingsModal 集中管理用户名、密码、主题与退出。
+type SettingsTab = 'account' | 'appearance' | 'sidebar';
+
+// SettingsModal 集中管理用户名、密码、主题与退出，按 tab 分组：账户 / 主题 / 侧边栏。
 export function SettingsModal({ onClose }: SettingsModalProps) {
   const { user, setUser, logout } = useAuthStore();
   const { theme, toggleTheme, recentEnabled, recentLimit, setRecentEnabled, setRecentLimit } = useStore();
+  const [tab, setTab] = useState<SettingsTab>('account');
+
+  const tabs: { key: SettingsTab; label: string; icon: React.ReactNode }[] = [
+    { key: 'account', label: '账户', icon: <User className="w-3.5 h-3.5" /> },
+    { key: 'appearance', label: '主题', icon: <Palette className="w-3.5 h-3.5" /> },
+    { key: 'sidebar', label: '侧边栏', icon: <PanelLeft className="w-3.5 h-3.5" /> },
+  ];
 
   return (
     <Modal isOpen={true} onClose={onClose} title="设置" maxWidth="md">
-      <div className="space-y-6">
-        <AccountSection
-          currentName={user?.username ?? ''}
-          onUpdated={(name) => setUser({ id: user?.id ?? 0, username: name })}
-        />
-        <PasswordSection />
-        <TwoFactorSection />
-        <AppearanceSection theme={theme} onToggle={toggleTheme} />
+      {/* 标签栏：下划线式，激活项蓝色底边 */}
+      <div className="flex gap-5 border-b border-slate-100 dark:border-slate-800 mb-5">
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={cn(
+              'flex items-center gap-1.5 pb-2 px-0.5 text-sm transition-colors border-b-2 -mb-px',
+              tab === t.key
+                ? 'border-blue-600 text-blue-600 dark:text-blue-400 font-medium'
+                : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300',
+            )}
+          >
+            {t.icon}
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* tab 内容：仅渲染当前激活项，避免非账户 tab 触发 2FA 状态请求 */}
+      {tab === 'account' && (
+        <div className="space-y-6">
+          <AccountSection
+            currentName={user?.username ?? ''}
+            onUpdated={(name) => setUser({ id: user?.id ?? 0, username: name })}
+          />
+          <PasswordSection />
+          <TwoFactorSection />
+        </div>
+      )}
+      {tab === 'appearance' && <AppearanceSection theme={theme} onToggle={toggleTheme} />}
+      {tab === 'sidebar' && (
         <RecentAccessSection
           enabled={recentEnabled}
           limit={recentLimit}
           onToggle={setRecentEnabled}
           onLimitChange={setRecentLimit}
         />
-        <LogoutSection onLogout={() => logout()} />
-      </div>
-      <div className="text-[11px] text-slate-400 dark:text-slate-600 text-center select-none mt-2">
-        flist {APP_VERSION}
+      )}
+
+      {/* 常驻页脚：退出登录 + 版本号，跨 tab 始终可见 */}
+      <div className="mt-5 pt-4 border-t border-slate-100 dark:border-slate-800 space-y-2">
+        <button
+          onClick={() => logout()}
+          className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium rounded-lg text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-900/20 hover:bg-rose-100 dark:hover:bg-rose-900/30 transition-colors"
+        >
+          <LogOut className="w-4 h-4" />
+          退出登录
+        </button>
+        <div className="text-[11px] text-slate-400 dark:text-slate-600 text-center select-none">
+          flist {APP_VERSION}
+        </div>
       </div>
     </Modal>
   );
@@ -429,7 +472,6 @@ function TwoFactorSection() {
 function AppearanceSection({ theme, onToggle }: { theme: 'light' | 'dark'; onToggle: () => void }) {
   return (
     <section>
-      <SectionHeader icon={<Palette className="w-4 h-4" />} title="外观" />
       <div className="flex items-center justify-between">
         <span className="text-sm text-slate-600 dark:text-slate-300">主题</span>
         <div className="bg-slate-200/70 dark:bg-slate-800 p-0.5 rounded-full flex items-center w-[84px] relative">
@@ -478,7 +520,6 @@ function RecentAccessSection({
 }) {
   return (
     <section>
-      <SectionHeader icon={<History className="w-4 h-4" />} title="最近访问" />
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <span className="text-sm text-slate-600 dark:text-slate-300">启用最近访问</span>
@@ -525,16 +566,3 @@ function RecentAccessSection({
   );
 }
 
-function LogoutSection({ onLogout }: { onLogout: () => void }) {
-  return (
-    <section className="pt-2 border-slate-100 dark:border-slate-800">
-      <button
-        onClick={onLogout}
-        className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium rounded-lg text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-900/20 hover:bg-rose-100 dark:hover:bg-rose-900/30 transition-colors"
-      >
-        <LogOut className="w-4 h-4" />
-        退出登录
-      </button>
-    </section>
-  );
-}
