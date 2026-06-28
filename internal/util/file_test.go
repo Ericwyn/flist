@@ -48,6 +48,33 @@ func TestIsTextExt(t *testing.T) {
 	}
 }
 
+func TestIsCompressedExt(t *testing.T) {
+	// 已压缩格式（归档 / 图片 / 音视频 / zip 容器文档 / pdf）→ true。
+	compressed := []string{
+		"pack.zip", "data.tar.gz", "x.7z", "y.rar",
+		"pic.jpg", "pic.JPEG", "anim.gif", "next.webp", "photo.heic",
+		"clip.mp4", "movie.MKV", "song.mp3", "track.flac",
+		"doc.docx", "sheet.xlsx", "deck.pptx", "lib.jar", "app.apk",
+		"report.pdf",
+	}
+	for _, name := range compressed {
+		if !IsCompressedExt(name) {
+			t.Errorf("%q should be compressed", name)
+		}
+	}
+
+	// 文本 / 文档 / 无损音频 / 无扩展名 → false（用 Deflate 有收益）。
+	uncompressed := []string{
+		"readme.txt", "notes.md", "data.csv", "main.go",
+		"audio.wav", "image.bmp", "raw.svg", "noext", "archive.tar",
+	}
+	for _, name := range uncompressed {
+		if IsCompressedExt(name) {
+			t.Errorf("%q should not be compressed", name)
+		}
+	}
+}
+
 func TestSniffText(t *testing.T) {
 	if !SniffText([]byte("hello world\nplain text")) {
 		t.Error("plain text should be detected as text")

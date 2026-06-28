@@ -8,7 +8,7 @@ import { cn } from '../lib/utils';
 export function SearchBar() {
   const {
     currentPath, searchOpen, searching, searchRecursive, searchHistory, previewPath,
-    runSearch, clearSearch, toggleSearchRecursive, clearSearchHistory,
+    runSearch, exitSearch, toggleSearchRecursive, clearSearchHistory,
   } = useFsStore();
   const [text, setText] = useState('');
   const [focused, setFocused] = useState(false);
@@ -45,7 +45,7 @@ export function SearchBar() {
 
   const clear = () => {
     setText('');
-    clearSearch();
+    exitSearch();
   };
 
   // pickHistory 选中历史词：回填输入并立即搜索。

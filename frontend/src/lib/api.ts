@@ -159,6 +159,71 @@ export const api = {
       return `/api/fs/download?${params.toString()}`;
     },
 
+    // archive 把多文件 / 目录打包为 zip 下载（流式生成）。
+    // 非 200 时先解析 JSON 错误信封抛 ApiError；200 则流式读取响应体并触发浏览器下载。
+    // name 为 zip 文件名（不含扩展名），缺省时由后端按选择回落。
+    // onProgress 在每读到一块数据时回调已接收字节数（流式 zip 无 Content-Length，故只能上报累计字节，无百分比）。
+    // signal 可用于中途取消下载（AbortController）。
+    async archive(paths: string[], name?: string, onProgress?: (receivedBytes: number) => void, signal?: AbortSignal): Promise<void> {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const token = getToken();
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const resp = await fetch('/api/fs/archive', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ paths, name: name ?? '' }),
+        credentials: 'same-origin',
+        signal,
+      });
+
+      if (!resp.ok) {
+        // 预检失败：响应是 JSON 错误信封而非 zip。
+        let env: Envelope<unknown> | null = null;
+        try {
+          env = (await resp.json()) as Envelope<unknown>;
+        } catch {
+          throw new ApiError(resp.status, `打包下载失败 (HTTP ${resp.status})`);
+        }
+        throw new ApiError(env.code, env.message || '打包下载失败');
+      }
+
+      // 流式读取响应体，边读边上报已接收字节；读完拼成 Blob 触发下载。
+      // resp.body 不可用（老浏览器）时回退到一次性 blob()。
+      let blob: Blob;
+      if (resp.body && onProgress) {
+        const reader = resp.body.getReader();
+        const chunks: Uint8Array[] = [];
+        let received = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) {
+            chunks.push(value);
+            received += value.length;
+            onProgress(received);
+          }
+        }
+        blob = new Blob(chunks as BlobPart[], { type: 'application/zip' });
+      } else {
+        blob = await resp.blob();
+      }
+
+      // 从响应头解析文件名，回落到 name / flist-download。
+      const filename =
+        parseContentDispositionFilename(resp.headers.get('Content-Disposition')) ||
+        `${name && name.trim() ? name.trim() : 'flist-download'}.zip`;
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    },
+
     // mkdir 创建单层目录，返回规范化后的路径。
     async mkdir(path: string): Promise<string> {
       const raw = await request<RawPathResult>('/api/fs/mkdir', {
@@ -329,6 +394,22 @@ export const api = {
     },
   },
 };
+
+// parseContentDispositionFilename 从 Content-Disposition 头解析文件名，
+// 兼容 RFC 5987 的 filename*=UTF-8''<percent-encoded> 与普通 filename="..."。
+function parseContentDispositionFilename(header: string | null): string | null {
+  if (!header) return null;
+  const star = header.match(/filename\*=UTF-8''([^;]+)/i);
+  if (star) {
+    try {
+      return decodeURIComponent(star[1]);
+    } catch {
+      return null;
+    }
+  }
+  const plain = header.match(/filename="?([^";]+)"?/i);
+  return plain ? plain[1] : null;
+}
 
 // 后端原始字段（snake_case）。
 interface RawEntry {

@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import { useFsStore } from '../fsStore';
 import { useStore } from '../store';
 import { useUploadStore } from '../uploadStore';
+import { useDownloadStore } from '../downloadStore';
 import { FileIcon } from './FileIcon';
 import { ContextMenu, MenuItem } from './ContextMenu';
 import { PropertiesModal } from './PropertiesModal';
@@ -45,21 +46,25 @@ type DialogState =
   | { kind: 'mkdir' }
   | { kind: 'touch' }
   | { kind: 'rename'; entry: FileEntry }
-  | { kind: 'delete'; entry: FileEntry };
+  | { kind: 'delete'; entries: FileEntry[] }
+  | { kind: 'delete-paths'; paths: string[] }; // 搜索结果按完整路径批量删除
 
 export function FileBrowser() {
   const {
     currentPath, entries, total, loading, error,
     sort, order, showHidden, history, historyIndex, selected,
     navigate, initFromUrl, restore, refresh, goBack, goForward, goUp,
-    setSort, toggleOrder, toggleHidden, select, openPreview,
-    mkdir, touch, rename, remove,
-    searchOpen, searchQuery, searching, searchResults, searchTruncated, searchTimedOut, clearSearch,
-    clipboard, copyToClipboard, cutToClipboard, paste, clearClipboard,
+    setSort, toggleOrder, toggleHidden,
+    selectOne, toggleSelect, rangeSelect, selectAll, clearSelection, openPreview,
+    mkdir, touch, rename, remove, removePaths,
+    searchOpen, searchQuery, searching, searchResults, searchTruncated, searchTimedOut, clearSearch, exitSearch,
+    searchSelected, selectOneHit, toggleHit, rangeHit, selectAllHits, clearHitSelection,
+    clipboard, copyToClipboard, cutToClipboard, copyPathsToClipboard, cutPathsToClipboard, paste, clearClipboard,
   } = useFsStore();
   const { viewMode, setViewMode } = useStore();
   const addBookmark = useBookmarkStore((s) => s.add);
   const enqueueUpload = useUploadStore((s) => s.enqueue);
+  const startDownload = useDownloadStore((s) => s.start);
 
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [propsTarget, setPropsTarget] = useState<{ path: string; entry: FileEntry } | null>(null);
@@ -103,7 +108,11 @@ export function FileBrowser() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 剪贴板快捷键：Ctrl/Cmd+C 复制、Ctrl/Cmd+X 剪切选中项，Ctrl/Cmd+V 粘贴到当前目录。
+  // 选中条目集合（派生）与单选便捷量（恰好选中一项时非空）。
+  const selectedEntries = entries.filter((e) => selected.has(e.name));
+  const singleSelected = selectedEntries.length === 1 ? selectedEntries[0] : null;
+
+  // 剪贴板快捷键：Ctrl/Cmd+C 复制、Ctrl/Cmd+X 剪切选中项，Ctrl/Cmd+V 粘贴；Ctrl/Cmd+A 全选。
   // 在搜索视图或输入框聚焦时不拦截，避免干扰文本编辑与浏览器原生复制。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -111,14 +120,17 @@ export function FileBrowser() {
       if (searchOpen) return;
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-      const sel = entries.find((it) => it.name === selected) || null;
+      const sels = entries.filter((it) => selected.has(it.name) && !it.unreachable);
       const key = e.key.toLowerCase();
-      if (key === 'c' && sel && !sel.unreachable) {
+      if (key === 'a') {
         e.preventDefault();
-        copyToClipboard([sel]);
-      } else if (key === 'x' && sel && !sel.unreachable) {
+        selectAll();
+      } else if (key === 'c' && sels.length > 0) {
         e.preventDefault();
-        cutToClipboard([sel]);
+        copyToClipboard(sels);
+      } else if (key === 'x' && sels.length > 0) {
+        e.preventDefault();
+        cutToClipboard(sels);
       } else if (key === 'v' && clipboard && clipboard.paths.length > 0) {
         e.preventDefault();
         void doPaste();
@@ -129,22 +141,86 @@ export function FileBrowser() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entries, selected, clipboard, searchOpen]);
 
-  // F2 重命名选中项，贴近原生文件管理器体验。
-  // 搜索态、输入框聚焦或已有弹窗时不触发。
+  // 无修饰键的快捷键：F2 重命名（单选）、Delete 批量删除、Escape 清空选择。
+  // 搜索态、输入框聚焦或已有弹窗时不触发（Escape 在有弹窗时交给弹窗处理）。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'F2' || searchOpen || dialog) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (searchOpen) return;
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-      const sel = entries.find((it) => it.name === selected) || null;
-      if (!sel) return;
-      e.preventDefault();
-      setDialog({ kind: 'rename', entry: sel });
+      const sels = entries.filter((it) => selected.has(it.name));
+      if (e.key === 'F2' && !dialog) {
+        if (sels.length !== 1) return;
+        e.preventDefault();
+        setDialog({ kind: 'rename', entry: sels[0] });
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && !dialog) {
+        if (sels.length === 0) return;
+        e.preventDefault();
+        setDialog({ kind: 'delete', entries: sels });
+      } else if (e.key === 'Escape' && !dialog && !menu) {
+        if (selected.size > 0) {
+          e.preventDefault();
+          clearSelection();
+        }
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entries, selected, searchOpen, dialog]);
+  }, [entries, selected, searchOpen, dialog, menu]);
+
+  // 搜索态快捷键：Ctrl/Cmd+A 全选命中、Ctrl/Cmd+C/X 复制/剪切选中路径、Delete 批量删除、Esc 清空选择。
+  // 输入框聚焦或已有弹窗时不拦截。
+  useEffect(() => {
+    if (!searchOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      const paths = searchResults.filter((h) => searchSelected.has(h.path)).map((h) => h.path);
+      if (e.ctrlKey || e.metaKey) {
+        if (e.altKey || e.shiftKey) return;
+        const key = e.key.toLowerCase();
+        if (key === 'a') {
+          e.preventDefault();
+          selectAllHits();
+        } else if (key === 'c' && paths.length > 0) {
+          e.preventDefault();
+          copyPathsToClipboard(paths);
+          notify(`已复制 ${paths.length} 项到剪贴板`);
+        } else if (key === 'x' && paths.length > 0) {
+          e.preventDefault();
+          cutPathsToClipboard(paths);
+          notify(`已剪切 ${paths.length} 项到剪贴板`);
+        }
+        return;
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && !dialog) {
+        if (paths.length === 0) return;
+        e.preventDefault();
+        setDialog({ kind: 'delete-paths', paths });
+      } else if (e.key === 'Escape' && !dialog && !menu) {
+        if (searchSelected.size > 0) {
+          e.preventDefault();
+          clearHitSelection();
+        }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchOpen, searchResults, searchSelected, dialog, menu]);
+
+  // handleItemClick 统一处理点选：Shift 范围、Ctrl/Cmd 切换、普通单选。
+  const handleItemClick = (entry: FileEntry, e: React.MouseEvent) => {
+    if (e.shiftKey) {
+      rangeSelect(entry.name);
+    } else if (e.ctrlKey || e.metaKey) {
+      toggleSelect(entry.name);
+    } else {
+      selectOne(entry.name);
+    }
+  };
 
   const crumbs = breadcrumbs(currentPath);
   const canBack = historyIndex > 0;
@@ -176,7 +252,7 @@ export function FileBrowser() {
     setPropsTarget({ path: joinPath(currentPath, entry.name), entry });
   };
 
-  // openHit 点击搜索结果：目录进入并退出搜索；文件直接预览，停留在搜索结果页
+  // openHit 双击搜索结果：目录进入并退出搜索；文件直接预览，停留在搜索结果页
   //（搜索范围本就是当前目录，跳转到所在目录意义不大）。
   const openHit = (hit: SearchHit) => {
     if (hit.type === 'dir') {
@@ -197,7 +273,19 @@ export function FileBrowser() {
     );
   };
 
-  const selectedEntry = entries.find((e) => e.name === selected) || null;
+  // handleHitClick 统一处理搜索结果点选：Shift 范围、Ctrl/Cmd 切换、普通单选。
+  const handleHitClick = (hit: SearchHit, e: React.MouseEvent) => {
+    if (e.shiftKey) {
+      rangeHit(hit.path);
+    } else if (e.ctrlKey || e.metaKey) {
+      toggleHit(hit.path);
+    } else {
+      selectOneHit(hit.path);
+    }
+  };
+
+  // selectedHitPaths 为当前搜索选中项的完整路径数组（按结果顺序）。
+  const selectedHitPaths = searchResults.filter((h) => searchSelected.has(h.path)).map((h) => h.path);
 
   // cutNames 为当前目录下被「剪切」的条目名集合，用于视图淡显标记。
   const cutNames = new Set<string>(
@@ -208,17 +296,35 @@ export function FileBrowser() {
       : [],
   );
 
+  // onItemContextMenu 在条目上右键：若该项已在多选集合内则保留选择（批量菜单），
+  // 否则单选该项再弹菜单。
   const onItemContextMenu = (e: React.MouseEvent, entry: FileEntry) => {
     e.preventDefault();
     e.stopPropagation();
-    select(entry.name);
+    if (!selected.has(entry.name)) {
+      selectOne(entry.name);
+    }
     setMenu({ x: e.clientX, y: e.clientY, entry });
   };
 
   const onBackgroundContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
-    select(null);
+    clearSelection();
     setMenu({ x: e.clientX, y: e.clientY, entry: null });
+  };
+
+  // doArchive 把给定条目打包下载为 zip（目录与多文件均可）。交给 downloadStore，进度在传输面板展示。
+  const doArchive = (items: FileEntry[]) => {
+    const paths = items.filter((it) => !it.unreachable).map((it) => joinPath(currentPath, it.name));
+    if (paths.length === 0) return;
+    const name = items.length === 1 ? items[0].name : undefined;
+    startDownload(paths, name);
+  };
+
+  // doArchivePaths 按完整路径打包下载（供搜索结果使用）。
+  const doArchivePaths = (paths: string[], name?: string) => {
+    if (paths.length === 0) return;
+    startDownload(paths, name);
   };
 
   // doPaste 粘贴剪贴板内容到当前目录，失败时提示。
@@ -265,6 +371,39 @@ export function FileBrowser() {
       items.push({ label: '刷新', icon: <RefreshCw className="w-4 h-4" />, onClick: refresh });
       return items;
     }
+
+    // 多选（>1）：弹批量菜单，作用于整个选择集。
+    if (selected.size > 1) {
+      const sels = selectedEntries;
+      const reachable = sels.filter((it) => !it.unreachable);
+      return [
+        {
+          label: `打包下载 ${reachable.length} 项`,
+          icon: <Download className="w-4 h-4" />,
+          disabled: reachable.length === 0,
+          onClick: () => void doArchive(reachable),
+        },
+        {
+          label: `复制 ${reachable.length} 项`,
+          icon: <Copy className="w-4 h-4" />,
+          disabled: reachable.length === 0,
+          onClick: () => copyToClipboard(reachable),
+        },
+        {
+          label: `剪切 ${reachable.length} 项`,
+          icon: <Scissors className="w-4 h-4" />,
+          disabled: reachable.length === 0,
+          onClick: () => cutToClipboard(reachable),
+        },
+        {
+          label: `删除 ${sels.length} 项`,
+          icon: <Trash2 className="w-4 h-4" />,
+          danger: true,
+          onClick: () => setDialog({ kind: 'delete', entries: sels }),
+        },
+      ];
+    }
+
     // 复制 / 剪切对所有可达条目通用。
     const clip: MenuItem[] = [
       { label: '复制', icon: <Copy className="w-4 h-4" />, onClick: () => copyToClipboard([entry]) },
@@ -273,17 +412,18 @@ export function FileBrowser() {
     if (entry.unreachable) {
       return [
         { label: '重命名', icon: <Pencil className="w-4 h-4" />, onClick: () => setDialog({ kind: 'rename', entry }) },
-        { label: '删除', icon: <Trash2 className="w-4 h-4" />, danger: true, onClick: () => setDialog({ kind: 'delete', entry }) },
+        { label: '删除', icon: <Trash2 className="w-4 h-4" />, danger: true, onClick: () => setDialog({ kind: 'delete', entries: [entry] }) },
         { label: '属性', icon: <Info className="w-4 h-4" />, onClick: () => showProps(entry) },
       ];
     }
     if (entry.type === 'dir') {
       return [
         { label: '打开', icon: <FolderOpen className="w-4 h-4" />, onClick: () => openEntry(entry) },
+        { label: '打包下载', icon: <Download className="w-4 h-4" />, onClick: () => void doArchive([entry]) },
         ...clip,
         { label: '收藏', icon: <Star className="w-4 h-4" />, onClick: () => doBookmarkEntry(entry) },
         { label: '重命名', icon: <Pencil className="w-4 h-4" />, onClick: () => setDialog({ kind: 'rename', entry }) },
-        { label: '删除', icon: <Trash2 className="w-4 h-4" />, danger: true, onClick: () => setDialog({ kind: 'delete', entry }) },
+        { label: '删除', icon: <Trash2 className="w-4 h-4" />, danger: true, onClick: () => setDialog({ kind: 'delete', entries: [entry] }) },
         { label: '属性', icon: <Info className="w-4 h-4" />, onClick: () => showProps(entry) },
       ];
     }
@@ -292,7 +432,7 @@ export function FileBrowser() {
       { label: '下载', icon: <Download className="w-4 h-4" />, onClick: () => doDownload(entry) },
       ...clip,
       { label: '重命名', icon: <Pencil className="w-4 h-4" />, onClick: () => setDialog({ kind: 'rename', entry }) },
-      { label: '删除', icon: <Trash2 className="w-4 h-4" />, danger: true, onClick: () => setDialog({ kind: 'delete', entry }) },
+      { label: '删除', icon: <Trash2 className="w-4 h-4" />, danger: true, onClick: () => setDialog({ kind: 'delete', entries: [entry] }) },
       { label: '属性', icon: <Info className="w-4 h-4" />, onClick: () => showProps(entry) },
     ];
   };
@@ -313,7 +453,7 @@ export function FileBrowser() {
             {searchOpen ? (
               <>
                 <button
-                  onClick={clearSearch}
+                  onClick={exitSearch}
                   className="flex items-center gap-1.5 mr-3 px-2.5 py-1.5 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0"
                   title="退出搜索，返回目录浏览"
                 >
@@ -365,40 +505,15 @@ export function FileBrowser() {
             )}
           </div>
 
-          {/* 操作区 */}
+          {/* 操作区（新建 / 属性 / 下载 / 删除 均移至右键菜单，工具栏只保留高频的上传与视图控制） */}
           <div className="flex items-center space-x-1 shrink-0">
             <SearchBar />
             <div className="w-px h-5 bg-slate-200 dark:bg-slate-700 mx-1" />
-            <button onClick={() => setDialog({ kind: 'mkdir' })}
-              disabled={searchOpen}
-              className="p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed"
-              title="新建文件夹">
-              <FolderPlus className="w-[18px] h-[18px]" />
-            </button>
-            <button onClick={() => setDialog({ kind: 'touch' })}
-              disabled={searchOpen}
-              className="p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed"
-              title="新建文件">
-              <FilePlus className="w-[18px] h-[18px]" />
-            </button>
             <button onClick={() => fileInputRef.current?.click()}
               disabled={searchOpen}
               className="p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed"
               title="上传文件">
               <Upload className="w-[18px] h-[18px]" />
-            </button>
-            <div className="w-px h-5 bg-slate-200 dark:bg-slate-700 mx-1" />
-            <button onClick={() => selectedEntry && showProps(selectedEntry)}
-              disabled={!selectedEntry || searchOpen}
-              className="p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed"
-              title="属性">
-              <Info className="w-[18px] h-[18px]" />
-            </button>
-            <button onClick={() => selectedEntry && selectedEntry.type === 'file' && doDownload(selectedEntry)}
-              disabled={!selectedEntry || selectedEntry.type !== 'file' || searchOpen}
-              className="p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed"
-              title="下载">
-              <Download className="w-[18px] h-[18px]" />
             </button>
             <div className="w-px h-5 bg-slate-200 dark:bg-slate-700 mx-1" />
             <button onClick={toggleHidden}
@@ -455,7 +570,7 @@ export function FileBrowser() {
 
       {/* 内容区（兼作拖拽上传放置区） */}
       <div className="flex-1 overflow-auto p-4 relative"
-        onClick={() => select(null)}
+        onClick={() => clearSelection()}
         onContextMenu={onBackgroundContextMenu}
         onDragOver={(e) => {
           if (searchOpen) return;
@@ -490,7 +605,16 @@ export function FileBrowser() {
             searching={searching}
             truncated={searchTruncated}
             timedOut={searchTimedOut}
+            selected={searchSelected}
+            onItemClick={handleHitClick}
             onOpen={openHit}
+            selectedCount={selectedHitPaths.length}
+            onArchive={() => void doArchivePaths(selectedHitPaths)}
+            onCopy={() => { copyPathsToClipboard(selectedHitPaths); notify(`已复制 ${selectedHitPaths.length} 项到剪贴板`); }}
+            onCut={() => { cutPathsToClipboard(selectedHitPaths); notify(`已剪切 ${selectedHitPaths.length} 项到剪贴板`); }}
+            onDelete={() => setDialog({ kind: 'delete-paths', paths: selectedHitPaths })}
+            onSelectAll={selectAllHits}
+            onClearSelection={clearHitSelection}
           />
         ) : error ? (
           <div className="flex flex-col items-center justify-center h-full text-slate-400">
@@ -505,9 +629,9 @@ export function FileBrowser() {
         ) : entries.length === 0 ? (
           <div className="flex items-center justify-center h-full text-slate-400 text-sm">此目录为空</div>
         ) : viewMode === 'grid' ? (
-          <GridView entries={entries} selected={selected} cutNames={cutNames} onSelect={select} onOpen={openEntry} onContextMenu={onItemContextMenu} />
+          <GridView entries={entries} selected={selected} cutNames={cutNames} onItemClick={handleItemClick} onOpen={openEntry} onContextMenu={onItemContextMenu} />
         ) : (
-          <ListView entries={entries} selected={selected} cutNames={cutNames} onSelect={select} onOpen={openEntry} onContextMenu={onItemContextMenu} />
+          <ListView entries={entries} selected={selected} cutNames={cutNames} onItemClick={handleItemClick} onOpen={openEntry} onContextMenu={onItemContextMenu} />
         )}
       </div>
 
@@ -525,7 +649,7 @@ export function FileBrowser() {
               <span>剪贴板 {clipboard.paths.length} 项</span>
             </button>
           )}
-          <span>{selectedEntry ? selectedEntry.name : currentPath}</span>
+          <span>{selectedEntries.length > 1 ? `已选 ${selectedEntries.length} 项` : singleSelected ? singleSelected.name : currentPath}</span>
         </div>
       </div>
 
@@ -580,12 +704,32 @@ export function FileBrowser() {
           title="删除确认"
           confirmText="删除"
           message={
+            dialog.entries.length === 1 ? (
+              <span>
+                确定要删除 <span className="font-medium break-all">{dialog.entries[0].name}</span>
+                {dialog.entries[0].type === 'dir' ? '（及其全部内容）' : ''} 吗？此操作不可恢复。
+              </span>
+            ) : (
+              <span>
+                确定要删除选中的 <span className="font-medium">{dialog.entries.length}</span> 项
+                {dialog.entries.some((e) => e.type === 'dir') ? '（含目录及其全部内容）' : ''} 吗？此操作不可恢复。
+              </span>
+            )
+          }
+          onConfirm={() => remove(dialog.entries)}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog?.kind === 'delete-paths' && (
+        <ConfirmModal
+          title="删除确认"
+          confirmText="删除"
+          message={
             <span>
-              确定要删除 <span className="font-medium break-all">{dialog.entry.name}</span>
-              {dialog.entry.type === 'dir' ? '（及其全部内容）' : ''} 吗？此操作不可恢复。
+              确定要删除选中的 <span className="font-medium">{dialog.paths.length}</span> 项吗？此操作不可恢复。
             </span>
           }
-          onConfirm={() => remove([dialog.entry])}
+          onConfirm={() => removePaths(dialog.paths)}
           onClose={() => setDialog(null)}
         />
       )}
@@ -595,25 +739,25 @@ export function FileBrowser() {
 
 interface ViewProps {
   entries: FileEntry[];
-  selected: string | null;
+  selected: Set<string>;
   cutNames: Set<string>;
-  onSelect: (name: string) => void;
+  onItemClick: (entry: FileEntry, e: React.MouseEvent) => void;
   onOpen: (entry: FileEntry) => void;
   onContextMenu: (e: React.MouseEvent, entry: FileEntry) => void;
 }
 
-function GridView({ entries, selected, cutNames, onSelect, onOpen, onContextMenu }: ViewProps) {
+function GridView({ entries, selected, cutNames, onItemClick, onOpen, onContextMenu }: ViewProps) {
   return (
     <div className="grid grid-cols-[repeat(auto-fill,minmax(100px,1fr))] gap-2">
       {entries.map((entry) => (
         <button
           key={entry.name}
-          onClick={(e) => { e.stopPropagation(); onSelect(entry.name); }}
+          onClick={(e) => { e.stopPropagation(); onItemClick(entry, e); }}
           onDoubleClick={() => onOpen(entry)}
           onContextMenu={(e) => onContextMenu(e, entry)}
           className={cn(
-            'flex flex-col items-center p-3 rounded-xl transition-colors group relative',
-            selected === entry.name
+            'flex flex-col items-center p-3 rounded-xl transition-colors group relative select-none focus:outline-none',
+            selected.has(entry.name)
               ? 'bg-blue-50 dark:bg-blue-900/30'
               : 'hover:bg-slate-50 dark:hover:bg-slate-900',
             cutNames.has(entry.name) && 'opacity-50',
@@ -635,7 +779,7 @@ function GridView({ entries, selected, cutNames, onSelect, onOpen, onContextMenu
   );
 }
 
-function ListView({ entries, selected, cutNames, onSelect, onOpen, onContextMenu }: ViewProps) {
+function ListView({ entries, selected, cutNames, onItemClick, onOpen, onContextMenu }: ViewProps) {
   return (
     <table className="w-full text-sm">
       <thead>
@@ -650,12 +794,12 @@ function ListView({ entries, selected, cutNames, onSelect, onOpen, onContextMenu
         {entries.map((entry) => (
           <tr
             key={entry.name}
-            onClick={(e) => { e.stopPropagation(); onSelect(entry.name); }}
+            onClick={(e) => { e.stopPropagation(); onItemClick(entry, e); }}
             onDoubleClick={() => onOpen(entry)}
             onContextMenu={(e) => onContextMenu(e, entry)}
             className={cn(
-              'cursor-default border-b border-slate-50 dark:border-slate-900/50',
-              selected === entry.name
+              'cursor-default border-b border-slate-50 dark:border-slate-900/50 select-none focus:outline-none',
+              selected.has(entry.name)
                 ? 'bg-blue-50 dark:bg-blue-900/30'
                 : 'hover:bg-slate-50 dark:hover:bg-slate-900',
               cutNames.has(entry.name) && 'opacity-50',
@@ -689,11 +833,25 @@ interface SearchResultsViewProps {
   searching: boolean;
   truncated: boolean;
   timedOut: boolean;
-  onOpen: (hit: SearchHit) => void;
+  selected: Set<string>; // 选中项完整路径集合
+  onItemClick: (hit: SearchHit, e: React.MouseEvent) => void; // 单击点选（含 Ctrl/Shift 修饰）
+  onOpen: (hit: SearchHit) => void; // 双击打开
+  selectedCount: number;
+  onArchive: () => void;
+  onCopy: () => void;
+  onCut: () => void;
+  onDelete: () => void;
+  onSelectAll: () => void;
+  onClearSelection: () => void;
 }
 
-// SearchResultsView 以列表形式展示搜索命中：目录进入，文件直接预览。
-function SearchResultsView({ query, results, searching, truncated, timedOut, onOpen }: SearchResultsViewProps) {
+// SearchResultsView 以列表形式展示搜索命中：单击点选（支持 Ctrl/Cmd/Shift 多选），双击打开。
+// 选中 ≥1 项时顶部显示批量操作条（打包下载 / 复制 / 剪切 / 删除）。
+function SearchResultsView({
+  query, results, searching, truncated, timedOut,
+  selected, onItemClick, onOpen,
+  selectedCount, onArchive, onCopy, onCut, onDelete, onSelectAll, onClearSelection,
+}: SearchResultsViewProps) {
   if (searching) {
     return (
       <div className="flex items-center justify-center h-full text-slate-400">
@@ -711,17 +869,49 @@ function SearchResultsView({ query, results, searching, truncated, timedOut, onO
   }
   return (
     <div className="flex flex-col">
-      <div className="text-xs text-slate-400 mb-2 px-1">
-        找到 {results.length} 个匹配「{query}」的结果
-        {truncated && '（已达上限，结果可能不完整）'}
-        {timedOut && '（搜索超时，结果可能不完整）'}
-      </div>
+      {/* 顶部信息行 / 批量操作条：选中 ≥1 项时切换为操作条。 */}
+      {selectedCount > 0 ? (
+        <div className="flex items-center gap-2 mb-2 px-1 text-xs">
+          <span className="text-slate-500 dark:text-slate-400">已选 {selectedCount} 项</span>
+          <button onClick={onArchive}
+            className="flex items-center gap-1 px-2 py-1 rounded-md text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800">
+            <Download className="w-3.5 h-3.5" /> 打包下载
+          </button>
+          <button onClick={onCopy}
+            className="flex items-center gap-1 px-2 py-1 rounded-md text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800">
+            <Copy className="w-3.5 h-3.5" /> 复制
+          </button>
+          <button onClick={onCut}
+            className="flex items-center gap-1 px-2 py-1 rounded-md text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800">
+            <Scissors className="w-3.5 h-3.5" /> 剪切
+          </button>
+          <button onClick={onDelete}
+            className="flex items-center gap-1 px-2 py-1 rounded-md text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30">
+            <Trash2 className="w-3.5 h-3.5" /> 删除
+          </button>
+          <div className="flex-1" />
+          <button onClick={onSelectAll} className="px-2 py-1 rounded-md text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800">全选</button>
+          <button onClick={onClearSelection} className="px-2 py-1 rounded-md text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800">取消选择</button>
+        </div>
+      ) : (
+        <div className="text-xs text-slate-400 mb-2 px-1">
+          找到 {results.length} 个匹配「{query}」的结果
+          {truncated && '（已达上限，结果可能不完整）'}
+          {timedOut && '（搜索超时，结果可能不完整）'}
+        </div>
+      )}
       <div className="divide-y divide-slate-50 dark:divide-slate-900/50">
         {results.map((hit) => (
           <button
             key={hit.path}
-            onClick={() => onOpen(hit)}
-            className="w-full flex items-center gap-2.5 py-2 px-2 text-left rounded-lg hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors"
+            onClick={(e) => onItemClick(hit, e)}
+            onDoubleClick={() => onOpen(hit)}
+            className={cn(
+              'w-full flex items-center gap-2.5 py-2 px-2 text-left rounded-lg transition-colors select-none focus:outline-none',
+              selected.has(hit.path)
+                ? 'bg-blue-50 dark:bg-blue-900/30'
+                : 'hover:bg-slate-50 dark:hover:bg-slate-900',
+            )}
           >
             <FileIcon kind={kindOf({ name: hit.name, type: hit.type })} className="w-5 h-5 shrink-0" />
             <div className="flex-1 min-w-0">

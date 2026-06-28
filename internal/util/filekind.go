@@ -46,6 +46,30 @@ var (
 		".mp3": true, ".wav": true, ".ogg": true, ".flac": true, ".aac": true,
 		".m4a": true, ".opus": true, ".wma": true,
 	}
+	// compressedExts 是「已压缩」的扩展名集合：这些格式内部已做熵编码，
+	// 再用 deflate 二次压缩几乎无收益却白耗 CPU，打包时应以 Store 直存。
+	// 注意 .wav 不在此列（PCM 无损可压），故不与 audioExts 简单复用。
+	compressedExts = map[string]bool{
+		// 归档 / 压缩容器
+		".zip": true, ".gz": true, ".tgz": true, ".bz2": true, ".tbz": true,
+		".xz": true, ".txz": true, ".7z": true, ".rar": true, ".zst": true,
+		".lz": true, ".lzma": true, ".cab": true, ".arj": true,
+		// 图片（已压缩）
+		".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
+		".avif": true, ".heic": true, ".heif": true, ".jxl": true,
+		// 视频（已压缩）
+		".mp4": true, ".m4v": true, ".mkv": true, ".mov": true, ".webm": true,
+		".avi": true, ".flv": true, ".wmv": true, ".mpeg": true, ".mpg": true,
+		".ts": true, ".m2ts": true,
+		// 音频（已压缩）
+		".mp3": true, ".aac": true, ".m4a": true, ".ogg": true, ".oga": true,
+		".opus": true, ".flac": true, ".wma": true,
+		// zip 容器型文档 / 包
+		".docx": true, ".xlsx": true, ".pptx": true, ".odt": true, ".ods": true,
+		".odp": true, ".epub": true, ".jar": true, ".war": true, ".apk": true,
+		// 其他已压缩
+		".pdf": true, ".dmg": true,
+	}
 )
 
 // DetectKind 按文件名扩展名推导大类（不读文件内容）。
@@ -68,6 +92,12 @@ func DetectKind(name string) Kind {
 // IsTextExt 判断扩展名是否属于已知文本类型。
 func IsTextExt(name string) bool {
 	return textExts[strings.ToLower(path.Ext(name))]
+}
+
+// IsCompressedExt 判断文件名扩展名是否属于「已压缩」格式（媒体 / 归档 / zip 容器文档等）。
+// 打包下载据此选择 zip 压缩方式：已压缩用 Store 直存（不二次压缩白耗 CPU），其余用 Deflate。
+func IsCompressedExt(name string) bool {
+	return compressedExts[strings.ToLower(path.Ext(name))]
 }
 
 // SniffText 对内容前缀做二进制嗅探：含 NUL 字节视为二进制（非文本）。

@@ -189,6 +189,72 @@ func (h *FileHandler) Download(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, name, modTime, target.File)
 }
 
+type archiveRequest struct {
+	Paths []string `json:"paths"`
+	Name  string   `json:"name"`
+}
+
+// Archive 处理 POST /api/fs/archive：把选中的多文件 / 目录流式打包为 zip 下载。
+//
+// 流程：先预检所有顶层路径（写首字节前），失败则返回标准 JSON 错误、不发送任何 zip 字节；
+// 预检通过后设响应头并流式生成 zip（边写边发）。中途出错只能记日志并中断连接（已写出部分
+// 字节无法回滚），客户端据 zip 中央目录缺失判定下载损坏。
+func (h *FileHandler) Archive(w http.ResponseWriter, r *http.Request) {
+	var req archiveRequest
+	if err := decodeJSON(w, r, &req); err != nil || len(req.Paths) == 0 {
+		failBadRequest(w, "paths required")
+		return
+	}
+
+	// 预检：任一路径不存在 / 越界即返回 JSON 错误（此时尚未写出 zip 字节）。
+	targets, err := h.files.ResolveArchiveTargets(r.Context(), req.Paths)
+	if err != nil {
+		failFileErr(w, err)
+		return
+	}
+
+	filename := archiveFilename(req.Name, targets)
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+urlEncode(filename))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
+	onSkip := func(apiPath string, serr error) {
+		h.logger.Debug("archive skip entry",
+			slog.String("path", apiPath),
+			slog.Any("error", serr),
+			slog.String("request_id", middleware.RequestIDFromContext(r.Context())),
+		)
+	}
+	if werr := h.files.WriteArchive(r.Context(), w, targets, onSkip); werr != nil {
+		// 响应头已发出，无法改写状态码；仅记日志，连接中断使 zip 不完整。
+		h.logger.Warn("archive write failed",
+			slog.String("file", filename),
+			slog.Any("error", werr),
+			slog.String("request_id", middleware.RequestIDFromContext(r.Context())),
+		)
+		return
+	}
+	h.audit(r, "archive", filename, "ok")
+}
+
+// archiveFilename 决定 zip 下载文件名（含 .zip）：优先用请求显式 name，
+// 否则单顶层取其名、多顶层回落 "flist-download"。
+func archiveFilename(reqName string, targets []service.ArchiveTarget) string {
+	name := strings.TrimSpace(reqName)
+	if name == "" {
+		if len(targets) == 1 {
+			name = targets[0].ZipName
+		} else {
+			name = "flist-download"
+		}
+	}
+	name = strings.TrimSuffix(name, ".zip")
+	if name == "" {
+		name = "flist-download"
+	}
+	return name + ".zip"
+}
+
 type pathRequest struct {
 	Path string `json:"path"`
 }

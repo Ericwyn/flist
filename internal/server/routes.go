@@ -64,6 +64,9 @@ func NewRouter(d Deps) (http.Handler, error) {
 			protected.Get("/fs/preview", fileHandler.Preview)
 			protected.Get("/fs/download", fileHandler.Download)
 
+			// Phase 5 打包下载（只读型重操作，流式 zip；仅受全局限流，不套写限流）。
+			protected.Post("/fs/archive", fileHandler.Archive)
+
 			// Phase 2 搜索（只读，仅受全局限流 + 自身超时/数量上限保护）。
 			protected.Get("/fs/search", fileHandler.Search)
 
