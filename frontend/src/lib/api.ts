@@ -13,14 +13,25 @@ export interface Envelope<T = unknown> {
 }
 
 export interface LoginData {
-  token: string;
-  expires_at: number;
-  username: string;
+  token?: string;
+  expires_at?: number;
+  username?: string;
+  requires_two_factor?: boolean;
+  temp_token?: string;
 }
 
 export interface MeData {
   id: number;
   username: string;
+}
+
+export interface TwoFactorSetupResult {
+  secret: string;
+  qr_code: string;
+}
+
+export interface TwoFactorStatusResult {
+  enabled: boolean;
 }
 
 const TOKEN_KEY = 'flist_token';
@@ -115,6 +126,29 @@ export const api = {
       method: 'PUT',
       body: { username },
     });
+  },
+
+  verifyTwoFactor(tempToken: string, code: string): Promise<LoginData> {
+    return request<LoginData>('/api/auth/verify-2fa', {
+      method: 'POST',
+      body: { temp_token: tempToken, code },
+    });
+  },
+
+  getTwoFactorStatus(): Promise<TwoFactorStatusResult> {
+    return request<TwoFactorStatusResult>('/api/2fa/status');
+  },
+
+  setupTwoFactor(): Promise<TwoFactorSetupResult> {
+    return request<TwoFactorSetupResult>('/api/2fa/setup', { method: 'POST' });
+  },
+
+  enableTwoFactor(code: string): Promise<null> {
+    return request<null>('/api/2fa/enable', { method: 'POST', body: { code } });
+  },
+
+  disableTwoFactor(code: string): Promise<null> {
+    return request<null>('/api/2fa/disable', { method: 'POST', body: { code } });
   },
 
   fs: {

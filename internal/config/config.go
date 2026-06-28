@@ -21,6 +21,7 @@ type Config struct {
 	MaxEdit    int64         // 单文件在线编辑大小上限（字节），超过则拒绝编辑
 	Debug      bool          // 调试日志（级别降到 Debug，输出上传分片等细节）
 	ResetAdmin bool          // 为 true 时重置 id=1 的管理员凭据后退出，不启动服务
+	ResetTOTP  bool          // 为 true 时清除 id=1 的 TOTP 配置后退出，不启动服务
 }
 
 const (
@@ -86,6 +87,7 @@ func Load(args []string) (*Config, error) {
 	maxEdit := fs.Int64("max-edit-size", maxEditDefault, "单文件在线编辑大小上限（字节），超过则拒绝编辑")
 	debug := fs.Bool("debug", envOr("FLIST_DEBUG", "") == "true", "调试日志：级别降到 Debug，输出上传分片(index/received/total_chunks)等细节")
 	resetAdmin := fs.Bool("reset-admin", false, "重置管理员（id=1）的用户名和密码为 admin + 随机密码后退出，不启动服务。登录后可在设置中修改。")
+	resetTotp := fs.Bool("reset-totp", false, "清除管理员（id=1）的 TOTP 配置，恢复为纯密码登录后退出，不启动服务。")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -98,8 +100,8 @@ func Load(args []string) (*Config, error) {
 		return nil, fmt.Errorf("--max-edit-size 必须为正整数字节数")
 	}
 
-	// --reset-admin 模式只需要访问数据库，不需要 root。
-	if !*resetAdmin && *root == "" {
+	// --reset-admin 和 --reset-totp 模式只需要访问数据库，不需要 root。
+	if !*resetAdmin && !*resetTotp && *root == "" {
 		return nil, fmt.Errorf("--root 为必填项：未指定根目录，拒绝启动（避免误将整个文件系统暴露）")
 	}
 
@@ -114,6 +116,7 @@ func Load(args []string) (*Config, error) {
 		MaxEdit:    *maxEdit,
 		Debug:      *debug,
 		ResetAdmin: *resetAdmin,
+		ResetTOTP:  *resetTotp,
 	}
 	return cfg, nil
 }

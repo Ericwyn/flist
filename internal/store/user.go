@@ -33,7 +33,7 @@ func (s *Store) CreateUser(username, passwordHash string) (int64, error) {
 // GetUserByUsername 按用户名查询用户。
 func (s *Store) GetUserByUsername(username string) (*model.User, error) {
 	return s.scanUser(s.db.QueryRow(
-		`SELECT id, username, password, created_at, updated_at FROM users WHERE username = ?`,
+		`SELECT id, username, password, totp_secret, two_factor_enabled, created_at, updated_at FROM users WHERE username = ?`,
 		username,
 	))
 }
@@ -41,7 +41,7 @@ func (s *Store) GetUserByUsername(username string) (*model.User, error) {
 // GetUserByID 按 ID 查询用户。
 func (s *Store) GetUserByID(id int64) (*model.User, error) {
 	return s.scanUser(s.db.QueryRow(
-		`SELECT id, username, password, created_at, updated_at FROM users WHERE id = ?`,
+		`SELECT id, username, password, totp_secret, two_factor_enabled, created_at, updated_at FROM users WHERE id = ?`,
 		id,
 	))
 }
@@ -84,12 +84,27 @@ func (s *Store) UpdateUsername(userID int64, username string) error {
 
 func (s *Store) scanUser(row *sql.Row) (*model.User, error) {
 	var u model.User
-	err := row.Scan(&u.ID, &u.Username, &u.Password, &u.CreatedAt, &u.UpdatedAt)
+	var twoFactorEnabled int
+	err := row.Scan(&u.ID, &u.Username, &u.Password, &u.TOTPSecret, &twoFactorEnabled, &u.CreatedAt, &u.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
+	u.TwoFactorEnabled = twoFactorEnabled != 0
 	return &u, nil
+}
+
+// UpdateTOTP 更新用户的 TOTP 密钥与启用状态，并刷新 updated_at。
+func (s *Store) UpdateTOTP(userID int64, secret string, enabled bool) error {
+	var e int
+	if enabled {
+		e = 1
+	}
+	_, err := s.db.Exec(
+		`UPDATE users SET totp_secret = ?, two_factor_enabled = ?, updated_at = ? WHERE id = ?`,
+		secret, e, time.Now().UTC(), userID,
+	)
+	return err
 }

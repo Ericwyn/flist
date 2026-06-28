@@ -11,6 +11,10 @@ const (
 	CodeWeakPassword       = 1004
 	CodeInvalidUsername    = 1005
 	CodeUsernameTaken      = 1006
+	CodeTwoFactorRequired  = 1007
+	CodeInvalidTOTP        = 1008
+	CodeTOTPAlreadyEnabled = 1009
+	CodeTOTPNotEnabled     = 1010
 	CodePathNotFound       = 2001
 	CodePathTraversal      = 2002
 	CodePermissionDenied   = 2003

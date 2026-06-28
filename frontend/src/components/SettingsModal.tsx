@@ -1,10 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Modal } from './Modal';
 import { api, ApiError } from '../lib/api';
 import { useAuthStore } from '../authStore';
 import { useStore } from '../store';
 import { cn } from '../lib/utils';
-import { User, Lock, Palette, LogOut, Sun, Moon, Loader2, Check, History } from 'lucide-react';
+import { User, Lock, Palette, LogOut, Sun, Moon, Loader2, Check, History, Shield } from 'lucide-react';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -45,6 +45,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
           onUpdated={(name) => setUser({ id: user?.id ?? 0, username: name })}
         />
         <PasswordSection />
+        <TwoFactorSection />
         <AppearanceSection theme={theme} onToggle={toggleTheme} />
         <RecentAccessSection
           enabled={recentEnabled}
@@ -229,6 +230,192 @@ function PasswordSection() {
           </button>
         </div>
       </form>
+    </section>
+  );
+}
+
+function TwoFactorSection() {
+  const [enabled, setEnabled] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [showSetup, setShowSetup] = useState(false);
+  const [qrCode, setQrCode] = useState('');
+  const [secret, setSecret] = useState('');
+  const [code, setCode] = useState('');
+  const [status, setStatus] = useState<Status>({ kind: 'idle' });
+
+  const totpErrors: Record<number, string> = {
+    1008: '验证码错误，请重试',
+    1009: '2FA 已启用',
+    1010: '2FA 未启用',
+  };
+
+  useEffect(() => {
+    api.getTwoFactorStatus()
+      .then((res) => setEnabled(res.enabled))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleSetup = async () => {
+    setStatus({ kind: 'saving' });
+    try {
+      const res = await api.setupTwoFactor();
+      setSecret(res.secret);
+      setQrCode(res.qr_code);
+      setShowSetup(true);
+      setCode('');
+      setStatus({ kind: 'idle' });
+    } catch (e) {
+      setStatus({ kind: 'error', message: errMessage(e, totpErrors) });
+    }
+  };
+
+  const handleEnable = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (status.kind === 'saving') return;
+    setStatus({ kind: 'saving' });
+    try {
+      await api.enableTwoFactor(code.trim());
+      setEnabled(true);
+      setShowSetup(false);
+      setQrCode('');
+      setSecret('');
+      setCode('');
+      setStatus({ kind: 'ok', message: '两步验证已开启' });
+    } catch (e) {
+      setStatus({ kind: 'error', message: errMessage(e, totpErrors) });
+    }
+  };
+
+  const handleDisable = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (status.kind === 'saving') return;
+    setStatus({ kind: 'saving' });
+    try {
+      await api.disableTwoFactor(code.trim());
+      setEnabled(false);
+      setCode('');
+      setStatus({ kind: 'ok', message: '两步验证已关闭' });
+    } catch (e) {
+      setStatus({ kind: 'error', message: errMessage(e, totpErrors) });
+    }
+  };
+
+  const clearStatus = () => {
+    if (status.kind !== 'idle' && status.kind !== 'saving') setStatus({ kind: 'idle' });
+  };
+
+  return (
+    <section>
+      <SectionHeader icon={<Shield className="w-4 h-4" />} title="安全" />
+      {loading ? (
+        <div className="flex items-center gap-2 text-sm text-slate-400">
+          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          加载中…
+        </div>
+      ) : enabled ? (
+        showSetup ? null : (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 text-sm text-emerald-600 dark:text-emerald-400">
+              <Check className="w-4 h-4" />
+              两步验证已开启
+            </div>
+            <form onSubmit={handleDisable} className="space-y-2">
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                关闭两步验证需输入当前验证码确认。
+              </p>
+              <input
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={6}
+                value={code}
+                onChange={(e) => {
+                  setCode(e.target.value.replace(/\D/g, ''));
+                  clearStatus();
+                }}
+                placeholder="6 位验证码"
+                autoComplete="one-time-code"
+                className={cn(inputClass, 'text-center tracking-[0.3em] font-mono')}
+              />
+              <div className="flex items-center justify-between">
+                <StatusLine status={status} />
+                <button
+                  type="submit"
+                  className={cn(btnPrimary, 'ml-auto bg-rose-600 hover:bg-rose-700')}
+                  disabled={status.kind === 'saving' || code.length !== 6}
+                >
+                  {status.kind === 'saving' && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  关闭 2FA
+                </button>
+              </div>
+            </form>
+          </div>
+        )
+      ) : showSetup ? (
+        <div className="space-y-3">
+          <div className="flex flex-col items-center gap-3">
+            <img src={qrCode} alt="QR Code" className="w-48 h-48 rounded-lg border border-slate-200 dark:border-slate-700" />
+            <p className="text-xs text-slate-500 dark:text-slate-400 text-center">
+              使用 Google Authenticator、1Password 等验证器 App 扫描上方 QR 码
+            </p>
+            <p className="text-[11px] text-slate-400 dark:text-slate-500">
+              无法扫码？手动输入密钥：<code className="font-mono text-slate-600 dark:text-slate-300 break-all">{secret}</code>
+            </p>
+          </div>
+          <form onSubmit={handleEnable} className="space-y-2">
+            <input
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              maxLength={6}
+              value={code}
+              onChange={(e) => {
+                setCode(e.target.value.replace(/\D/g, ''));
+                clearStatus();
+              }}
+              placeholder="输入验证器中的 6 位验证码"
+              autoComplete="one-time-code"
+              className={cn(inputClass, 'text-center tracking-[0.3em] font-mono')}
+            />
+            <div className="flex items-center justify-between">
+              <StatusLine status={status} />
+              <div className="flex gap-2 ml-auto">
+                <button
+                  type="button"
+                  onClick={() => { setShowSetup(false); setCode(''); setStatus({ kind: 'idle' }); }}
+                  className="px-3 py-1.5 text-sm rounded-lg text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors"
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  className={btnPrimary}
+                  disabled={status.kind === 'saving' || code.length !== 6}
+                >
+                  {status.kind === 'saving' && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  确认开启
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <p className="text-sm text-slate-600 dark:text-slate-300">
+            开启后，登录需在密码验证通过后额外输入 6 位验证码。
+          </p>
+          <button
+            onClick={handleSetup}
+            className={btnPrimary}
+            disabled={status.kind === 'saving'}
+          >
+            {status.kind === 'saving' && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+            开启 2FA
+          </button>
+          <StatusLine status={status} />
+        </div>
+      )}
     </section>
   );
 }

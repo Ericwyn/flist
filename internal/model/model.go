@@ -4,11 +4,13 @@ import "time"
 
 // User 对应 users 表。
 type User struct {
-	ID        int64     `json:"id"`
-	Username  string    `json:"username"`
-	Password  string    `json:"-"` // bcrypt hash，永不序列化返回
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID                int64     `json:"id"`
+	Username          string    `json:"username"`
+	Password          string    `json:"-"` // bcrypt hash，永不序列化返回
+	TOTPSecret        string    `json:"-"` // TOTP 密钥（Base32），永不序列化返回
+	TwoFactorEnabled  bool      `json:"two_factor_enabled"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 // Session 对应 sessions 表。ID 为会话令牌的 SHA-256 哈希（hex）。

@@ -28,9 +28,11 @@ type loginRequest struct {
 }
 
 type loginResponse struct {
-	Token     string `json:"token"`
-	ExpiresAt int64  `json:"expires_at"`
-	Username  string `json:"username"`
+	Token             string `json:"token,omitempty"`
+	ExpiresAt         int64  `json:"expires_at,omitempty"`
+	Username          string `json:"username,omitempty"`
+	RequiresTwoFactor bool   `json:"requires_two_factor,omitempty"`
+	TempToken         string `json:"temp_token,omitempty"`
 }
 
 // Login 处理 POST /api/auth/login。
@@ -54,6 +56,59 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, service.ErrInvalidCredentials):
 			Fail(w, http.StatusUnauthorized, CodeInvalidCredentials, "invalid_credentials")
 		default:
+			failInternal(w)
+		}
+		return
+	}
+
+	// 2FA 已启用：不设置 Cookie，返回临时令牌供前端展示验证码输入步骤。
+	if res.RequiresTwoFactor {
+		OK(w, loginResponse{
+			RequiresTwoFactor: true,
+			TempToken:         res.TempToken,
+		})
+		return
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     middleware.SessionCookieName,
+		Value:    res.Token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   h.secureCookie,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  res.ExpiresAt,
+	})
+
+	OK(w, loginResponse{
+		Token:     res.Token,
+		ExpiresAt: res.ExpiresAt.Unix(),
+		Username:  res.User.Username,
+	})
+}
+
+type verifyTwoFactorRequest struct {
+	TempToken string `json:"temp_token"`
+	Code      string `json:"code"`
+}
+
+// VerifyTwoFactor 处理 POST /api/auth/verify-2fa。
+func (h *AuthHandler) VerifyTwoFactor(w http.ResponseWriter, r *http.Request) {
+	var req verifyTwoFactorRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		failBadRequest(w, "bad_request")
+		return
+	}
+	if req.TempToken == "" || req.Code == "" {
+		failBadRequest(w, "temp_token and code required")
+		return
+	}
+
+	res, err := h.auth.VerifyTwoFactor(req.TempToken, req.Code)
+	if err != nil {
+		if errors.Is(err, service.ErrInvalidTOTP) {
+			Fail(w, http.StatusUnauthorized, CodeInvalidTOTP, "invalid_totp")
+		} else {
 			failInternal(w)
 		}
 		return

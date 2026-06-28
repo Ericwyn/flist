@@ -64,6 +64,15 @@ func run(logger *slog.Logger, levelVar *slog.LevelVar) error {
 		return nil
 	}
 
+	// --reset-totp：清除管理员（id=1）的 TOTP 配置后退出，不启动服务。
+	if cfg.ResetTOTP {
+		if err := authSvc.ResetTOTP(1); err != nil {
+			return fmt.Errorf("reset totp failed: %w", err)
+		}
+		logger.Info("totp config reset; login with password")
+		return nil
+	}
+
 	// 启动时标准化并校验 root（必须已存在的目录）。
 	rootReal, err := util.ResolveRoot(cfg.Root)
 	if err != nil {

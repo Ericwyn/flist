@@ -17,11 +17,13 @@ type Store struct {
 // schema 为幂等建表语句，Phase 0 无需版本化迁移。
 const schema = `
 CREATE TABLE IF NOT EXISTS users (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    username    TEXT NOT NULL UNIQUE,
-    password    TEXT NOT NULL,
-    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    username            TEXT NOT NULL UNIQUE,
+    password            TEXT NOT NULL,
+    totp_secret         TEXT DEFAULT '',
+    two_factor_enabled  INTEGER DEFAULT 0,
+    created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -101,6 +103,42 @@ func OpenWithDSN(dsn string) (*Store, error) {
 func (s *Store) migrate() error {
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("migrate schema: %w", err)
+	}
+	if err := s.migrateAddColumns(); err != nil {
+		return fmt.Errorf("migrate add columns: %w", err)
+	}
+	return nil
+}
+
+// migrateAddColumns 对已有数据库补列（CREATE TABLE IF NOT EXISTS 不会为已存在的表添加新列）。
+func (s *Store) migrateAddColumns() error {
+	rows, err := s.db.Query(`PRAGMA table_info(users)`)
+	if err != nil {
+		return fmt.Errorf("pragma table_info: %w", err)
+	}
+	defer rows.Close()
+
+	existing := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dfltValue any
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+			return fmt.Errorf("scan table_info: %w", err)
+		}
+		existing[name] = true
+	}
+
+	if !existing["totp_secret"] {
+		if _, err := s.db.Exec(`ALTER TABLE users ADD COLUMN totp_secret TEXT DEFAULT ''`); err != nil {
+			return fmt.Errorf("add column totp_secret: %w", err)
+		}
+	}
+	if !existing["two_factor_enabled"] {
+		if _, err := s.db.Exec(`ALTER TABLE users ADD COLUMN two_factor_enabled INTEGER DEFAULT 0`); err != nil {
+			return fmt.Errorf("add column two_factor_enabled: %w", err)
+		}
 	}
 	return nil
 }

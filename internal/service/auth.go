@@ -24,6 +24,10 @@ var (
 	ErrInvalidUsername    = errors.New("invalid username")
 	ErrUsernameTaken      = errors.New("username taken")
 	ErrUserNotFound       = errors.New("user not found")
+	ErrInvalidTOTP        = errors.New("invalid totp code")
+	ErrTOTPAlreadyEnabled = errors.New("two-factor already enabled")
+	ErrTOTPNotEnabled     = errors.New("two-factor not enabled")
+	ErrTOTPNotSetup       = errors.New("totp secret not set up")
 )
 
 const (
@@ -39,6 +43,7 @@ type AuthService struct {
 	sessionTTL time.Duration
 	logger     *slog.Logger
 	lockout    *lockoutTracker
+	challenge  *challengeTracker
 }
 
 // NewAuthService 构造认证服务。
@@ -51,6 +56,7 @@ func NewAuthService(st *store.Store, sessionTTL time.Duration, logger *slog.Logg
 		sessionTTL: sessionTTL,
 		logger:     logger,
 		lockout:    newLockoutTracker(),
+		challenge:  newChallengeTracker(),
 	}
 }
 
@@ -85,19 +91,21 @@ func (a *AuthService) EnsureAdmin(username, password string) (created bool, gene
 
 // LoginResult 登录成功的返回。
 type LoginResult struct {
-	Token     string
-	ExpiresAt time.Time
-	User      *model.User
+	Token             string
+	ExpiresAt         time.Time
+	User              *model.User
+	RequiresTwoFactor bool   // 为 true 时 Token/ExpiresAt/User 为空
+	TempToken         string // 仅 RequiresTwoFactor=true 时有值
 }
 
 // Login 校验凭证并签发会话令牌。clientIP 用于登录失败锁定。
+// 若用户启用了 2FA，则不直接返回会话令牌，而是返回一个临时令牌供后续 verify-2fa 使用。
 func (a *AuthService) Login(username, password, clientIP string) (*LoginResult, error) {
 	key := clientIP + "|" + username
 	if a.lockout.isLocked(key) {
 		return nil, ErrAccountLocked
 	}
 	if len(password) > maxPasswordLen {
-		// 过长视为非法凭证，不泄露细节，同样计入失败。
 		a.lockout.recordFailure(key)
 		return nil, ErrInvalidCredentials
 	}
@@ -117,6 +125,15 @@ func (a *AuthService) Login(username, password, clientIP string) (*LoginResult, 
 	}
 
 	a.lockout.reset(key)
+
+	// 2FA 已启用：不签发会话令牌，返回临时挑战令牌。
+	if user.TwoFactorEnabled && user.TOTPSecret != "" {
+		tempToken, err := a.challenge.create(user.ID)
+		if err != nil {
+			return nil, err
+		}
+		return &LoginResult{RequiresTwoFactor: true, TempToken: tempToken}, nil
+	}
 
 	token, err := util.GenerateToken()
 	if err != nil {
@@ -257,6 +274,127 @@ func (a *AuthService) ResetAdmin(username, password string) (string, error) {
 	}
 
 	return generatedPass, nil
+}
+
+// VerifyTwoFactor 校验临时令牌和 TOTP 验证码，通过后创建正式会话。
+func (a *AuthService) VerifyTwoFactor(tempToken, code string) (*LoginResult, error) {
+	userID, ok := a.challenge.consume(tempToken)
+	if !ok {
+		return nil, ErrInvalidTOTP
+	}
+	user, err := a.store.GetUserByID(userID)
+	if err != nil {
+		return nil, ErrInvalidTOTP
+	}
+	if !user.TwoFactorEnabled || user.TOTPSecret == "" {
+		return nil, ErrTOTPNotEnabled
+	}
+	if !validateTOTP(code, user.TOTPSecret) {
+		return nil, ErrInvalidTOTP
+	}
+	token, err := util.GenerateToken()
+	if err != nil {
+		return nil, err
+	}
+	expiresAt := time.Now().Add(a.sessionTTL)
+	if err := a.store.CreateSession(util.HashToken(token), user.ID, expiresAt); err != nil {
+		return nil, err
+	}
+	a.logger.Info("2fa login success", slog.Int64("user_id", user.ID))
+	return &LoginResult{Token: token, ExpiresAt: expiresAt, User: user}, nil
+}
+
+// SetupTwoFactor 生成新的 TOTP 密钥并存入数据库（此时 two_factor_enabled 仍为 0），
+// 返回 secret 字符串和 QR 码 base64 data URI 供前端展示。
+func (a *AuthService) SetupTwoFactor(userID int64) (secret, qrCode string, err error) {
+	user, err := a.store.GetUserByID(userID)
+	if err != nil {
+		return "", "", err
+	}
+	if user.TwoFactorEnabled {
+		return "", "", ErrTOTPAlreadyEnabled
+	}
+	secret, key, err := generateTOTPSecret(user.Username)
+	if err != nil {
+		return "", "", err
+	}
+	qrCode, err = generateQRCode(key.URL())
+	if err != nil {
+		return "", "", err
+	}
+	if err := a.store.UpdateTOTP(userID, secret, false); err != nil {
+		return "", "", err
+	}
+	return secret, qrCode, nil
+}
+
+// EnableTwoFactor 验证用户输入的验证码，通过后正式启用 2FA。
+func (a *AuthService) EnableTwoFactor(userID int64, code string) error {
+	user, err := a.store.GetUserByID(userID)
+	if err != nil {
+		return err
+	}
+	if user.TwoFactorEnabled {
+		return ErrTOTPAlreadyEnabled
+	}
+	if user.TOTPSecret == "" {
+		return ErrTOTPNotSetup
+	}
+	if !validateTOTP(code, user.TOTPSecret) {
+		return ErrInvalidTOTP
+	}
+	if err := a.store.UpdateTOTP(userID, user.TOTPSecret, true); err != nil {
+		return err
+	}
+	a.logger.Info("2fa enabled", slog.Int64("user_id", userID))
+	return nil
+}
+
+// DisableTwoFactor 验证验证码后关闭 2FA，清空 secret。
+func (a *AuthService) DisableTwoFactor(userID int64, code string) error {
+	user, err := a.store.GetUserByID(userID)
+	if err != nil {
+		return err
+	}
+	if !user.TwoFactorEnabled {
+		return ErrTOTPNotEnabled
+	}
+	if !validateTOTP(code, user.TOTPSecret) {
+		return ErrInvalidTOTP
+	}
+	if err := a.store.UpdateTOTP(userID, "", false); err != nil {
+		return err
+	}
+	a.logger.Info("2fa disabled", slog.Int64("user_id", userID))
+	return nil
+}
+
+// GetTwoFactorStatus 返回用户的 2FA 启用状态。
+func (a *AuthService) GetTwoFactorStatus(userID int64) (bool, error) {
+	user, err := a.store.GetUserByID(userID)
+	if err != nil {
+		return false, err
+	}
+	return user.TwoFactorEnabled, nil
+}
+
+// ResetTOTP 清除用户的 TOTP 配置并恢复为纯密码登录，同时吊销所有会话。
+// 供 CLI --reset-totp 调用。
+func (a *AuthService) ResetTOTP(userID int64) error {
+	if _, err := a.store.GetUserByID(userID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return ErrUserNotFound
+		}
+		return err
+	}
+	if err := a.store.UpdateTOTP(userID, "", false); err != nil {
+		return err
+	}
+	if err := a.store.DeleteUserSessionsExcept(userID, ""); err != nil {
+		return err
+	}
+	a.logger.Info("totp config reset", slog.Int64("user_id", userID))
+	return nil
 }
 
 const (

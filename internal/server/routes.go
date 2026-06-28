@@ -36,6 +36,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 	r.Use(mw.SecurityHeaders)
 
 	authHandler := handler.NewAuthHandler(d.Auth, d.Config.SessionTTL)
+	twofactorHandler := handler.NewTwoFactorHandler(d.Auth)
 	systemHandler := handler.NewSystemHandler()
 	fileHandler := handler.NewFileHandler(d.Files, d.Uploads, d.Logger)
 	bookmarkHandler := handler.NewBookmarkHandler(d.Bookmarks, d.Logger)
@@ -47,6 +48,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 		// 公开路由（无需认证）。
 		api.Get("/system/health", systemHandler.Health)
 		api.Post("/auth/login", authHandler.Login)
+		api.Post("/auth/verify-2fa", authHandler.VerifyTwoFactor)
 
 		// 受保护路由。
 		api.Group(func(protected chi.Router) {
@@ -57,6 +59,12 @@ func NewRouter(d Deps) (http.Handler, error) {
 			protected.Get("/auth/me", authHandler.Me)
 			protected.Put("/auth/password", authHandler.ChangePassword)
 			protected.Put("/auth/username", authHandler.ChangeUsername)
+
+			// 2FA 管理接口。
+			protected.Get("/2fa/status", twofactorHandler.Status)
+			protected.Post("/2fa/setup", twofactorHandler.Setup)
+			protected.Post("/2fa/enable", twofactorHandler.Enable)
+			protected.Post("/2fa/disable", twofactorHandler.Disable)
 
 			// Phase 6 系统信息（磁盘用量；只读，仅受全局限流）。
 			protected.Get("/system/info", systemHandler.Info)
