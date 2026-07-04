@@ -1,5 +1,5 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import { HardDrive, Usb, Loader2, RefreshCw, Unplug, FolderOpen, Lock } from 'lucide-react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import { HardDrive, Usb, Loader2, RefreshCw, Unplug, FolderOpen, Lock, ChevronDown, ChevronUp } from 'lucide-react';
 import { Modal } from './Modal';
 import { api, ApiError } from '../lib/api';
 import { Device } from '../types';
@@ -18,6 +18,18 @@ export function DeviceManager({ onClose }: DeviceManagerProps) {
   const [error, setError] = useState<string | null>(null);
   // 每个设备各自的操作中状态（挂载 / 卸载），按 device 路径索引。
   const [busy, setBusy] = useState<Record<string, boolean>>({});
+  // 本地磁盘默认折叠，避免系统盘 / 数据盘挤占移动设备。
+  const [showLocal, setShowLocal] = useState(false);
+
+  // 按可移动性分组：移动设备（U 盘 / 移动硬盘）默认展示；本地磁盘折叠。
+  const { removable, local } = useMemo(() => {
+    const removable: Device[] = [];
+    const local: Device[] = [];
+    for (const d of devices) {
+      (d.removable ? removable : local).push(d);
+    }
+    return { removable, local };
+  }, [devices]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -101,16 +113,54 @@ export function DeviceManager({ onClose }: DeviceManagerProps) {
       ) : (
         <div className="space-y-2">
           {error && <p className="text-xs text-rose-500 pb-1">{error}</p>}
-          {devices.map((d) => (
-            <DeviceRow
-              key={d.device}
-              device={d}
-              busy={!!busy[d.device]}
-              onMount={() => onMount(d)}
-              onUnmount={() => onUnmount(d)}
-              onEnter={() => onEnter(d)}
-            />
-          ))}
+
+          {/* 移动设备（U 盘 / 移动硬盘）：默认展示 */}
+          {removable.length > 0 ? (
+            removable.map((d) => (
+              <DeviceRow
+                key={d.device}
+                device={d}
+                busy={!!busy[d.device]}
+                onMount={() => onMount(d)}
+                onUnmount={() => onUnmount(d)}
+                onEnter={() => onEnter(d)}
+              />
+            ))
+          ) : (
+            <p className="py-6 text-center text-sm text-slate-400 dark:text-slate-500">
+              未检测到移动设备，插入 U 盘 / 移动硬盘后点「刷新」
+            </p>
+          )}
+
+          {/* 本地磁盘：折叠，避免系统盘 / 数据盘干扰 */}
+          {local.length > 0 && (
+            <div className="pt-1">
+              <button
+                onClick={() => setShowLocal((v) => !v)}
+                className="w-full flex items-center justify-center gap-1 px-2 py-1.5 text-[11px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg transition-colors"
+              >
+                {showLocal ? (
+                  <>收起本地磁盘 <ChevronUp className="w-3 h-3" /></>
+                ) : (
+                  <>显示本地磁盘（{local.length}）<ChevronDown className="w-3 h-3" /></>
+                )}
+              </button>
+              {showLocal && (
+                <div className="space-y-2 mt-2">
+                  {local.map((d) => (
+                    <DeviceRow
+                      key={d.device}
+                      device={d}
+                      busy={!!busy[d.device]}
+                      onMount={() => onMount(d)}
+                      onUnmount={() => onUnmount(d)}
+                      onEnter={() => onEnter(d)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </Modal>
@@ -166,14 +216,25 @@ function DeviceRow({ device: d, busy, onMount, onUnmount, onEnter }: DeviceRowPr
               <FolderOpen className="w-3.5 h-3.5" />
               进入
             </button>
-            <button
-              onClick={onUnmount}
-              className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md transition-colors"
-              title="卸载 / 弹出"
-            >
-              <Unplug className="w-3.5 h-3.5" />
-              卸载
-            </button>
+            {d.system ? (
+              // 系统关键分区（根 / 引导）不提供卸载，避免误操作导致系统异常。
+              <span
+                className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-slate-300 dark:text-slate-600 cursor-not-allowed"
+                title="系统分区，不可卸载"
+              >
+                <Lock className="w-3.5 h-3.5" />
+                系统
+              </span>
+            ) : (
+              <button
+                onClick={onUnmount}
+                className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md transition-colors"
+                title="卸载 / 弹出"
+              >
+                <Unplug className="w-3.5 h-3.5" />
+                卸载
+              </button>
+            )}
           </>
         ) : (
           <button

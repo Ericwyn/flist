@@ -167,8 +167,9 @@ export interface Device {
   mounted: boolean;
   mountpoint: string;
   drivePath: string; // /drive/<id>，前端「进入」用
-  removable: boolean;
+  removable: boolean; // 是否可移动设备（USB / 热插拔）
   readonly: boolean;
+  system: boolean; // 是否为系统关键挂载（根 / 引导分区），前端禁用卸载
 }
 
 // 上传初始化返回，对应后端 model.UploadInitResult。

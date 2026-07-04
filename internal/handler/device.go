@@ -38,6 +38,7 @@ func toModel(d device.Device) model.Device {
 		DrivePath:  "/drive/" + d.ID,
 		Removable:  d.Removable,
 		Readonly:   d.Readonly,
+		System:     d.System,
 	}
 }
 

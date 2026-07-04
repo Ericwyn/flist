@@ -21,8 +21,9 @@ type Device struct {
 	Size       int64  // 容量字节
 	Mounted    bool   // 是否已挂载
 	Mountpoint string // OS 挂载目录（仅 Mounted 时有值）
-	Removable  bool   // 是否可移动设备
+	Removable  bool   // 是否可移动设备（USB / 热插拔 / RM 位）
 	Readonly   bool   // 是否只读
+	System     bool   // 是否为系统关键挂载（根 / 引导分区），不应卸载
 }
 
 // Service 抽象设备控制能力。Linux 有真实实现，其他平台为空实现。

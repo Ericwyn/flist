@@ -73,7 +73,7 @@ func (s *linuxService) List(ctx context.Context) ([]Device, error) {
 		return nil, ErrUnsupported
 	}
 	out, err := s.run(ctx, s.lsblkPath, "-J", "-b",
-		"-o", "NAME,PATH,TYPE,SIZE,FSTYPE,LABEL,MOUNTPOINT,RM,RO")
+		"-o", "NAME,PATH,TYPE,SIZE,FSTYPE,LABEL,MOUNTPOINT,RM,RO,HOTPLUG,TRAN")
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Warn("lsblk failed", slog.String("output", string(out)), slog.Any("error", err))
@@ -224,29 +224,39 @@ type lsblkOutput struct {
 // lsblkNode 是块设备树节点。size/rm/ro 在不同 lsblk 版本可能为数字、布尔或字符串，
 // 故用弹性类型解析。
 type lsblkNode struct {
-	Name       string       `json:"name"`
-	Path       string       `json:"path"`
-	Type       string       `json:"type"`
-	Size       flexInt64    `json:"size"`
-	FSType     string       `json:"fstype"`
-	Label      string       `json:"label"`
-	Mountpoint string       `json:"mountpoint"`
-	RM         flexBool     `json:"rm"`
-	RO         flexBool     `json:"ro"`
-	Children   []lsblkNode  `json:"children"`
+	Name       string      `json:"name"`
+	Path       string      `json:"path"`
+	Type       string      `json:"type"`
+	Size       flexInt64   `json:"size"`
+	FSType     string      `json:"fstype"`
+	Label      string      `json:"label"`
+	Mountpoint string      `json:"mountpoint"`
+	RM         flexBool    `json:"rm"`
+	RO         flexBool    `json:"ro"`
+	Hotplug    flexBool    `json:"hotplug"`
+	Tran       string      `json:"tran"`
+	Children   []lsblkNode `json:"children"`
 }
 
 // parseLsblk 解析 lsblk JSON，展平出可挂载的分区 / 无分区表的整盘。
+// removable / tran 由整盘（父节点）决定，分区继承其所属盘的属性。
 func parseLsblk(data []byte) ([]Device, error) {
 	var out lsblkOutput
 	if err := json.Unmarshal(data, &out); err != nil {
 		return nil, err
 	}
 	var devices []Device
-	var walk func(nodes []lsblkNode, parentRemovable bool)
-	walk = func(nodes []lsblkNode, parentRemovable bool) {
+	// walk 携带所属整盘的可移动性与传输方式（分区自身不带 hotplug/tran，需继承父盘）。
+	var walk func(nodes []lsblkNode, diskRemovable bool, diskTran string)
+	walk = func(nodes []lsblkNode, diskRemovable bool, diskTran string) {
 		for _, n := range nodes {
-			removable := bool(n.RM) || parentRemovable
+			// 顶层盘：以自身属性判定；分区：继承父盘属性。
+			removable := diskRemovable
+			tran := diskTran
+			if n.Type == "disk" || n.Type == "loop" || n.Type == "rom" {
+				removable = bool(n.RM) || bool(n.Hotplug) || n.Tran == "usb"
+				tran = n.Tran
+			}
 			if isMountable(n) {
 				if id, ok := safeID(n.Name); ok {
 					devices = append(devices, Device{
@@ -260,31 +270,52 @@ func parseLsblk(data []byte) ([]Device, error) {
 						Mountpoint: n.Mountpoint,
 						Removable:  removable,
 						Readonly:   bool(n.RO),
+						System:     isSystemMount(n.Mountpoint),
 					})
 				}
 			}
 			if len(n.Children) > 0 {
-				walk(n.Children, removable)
+				walk(n.Children, removable, tran)
 			}
 		}
 	}
-	walk(out.BlockDevices, false)
+	walk(out.BlockDevices, false, "")
 	return devices, nil
 }
 
-// isMountable 判断节点是否为可挂载条目：分区，或带文件系统且无子设备的整盘 / 卡设备。
+// isMountable 判断节点是否为「可作为存储管理」的条目。
+//
+// 过滤规则：
+//   - loop（snap / squashfs 虚拟盘）、rom（光驱）一律排除，非用户关心的存储；
+//   - swap / 无文件系统的裸分区排除（无法浏览）；
+//   - 保留有文件系统的分区，以及无分区表直接格式化的整盘 / SD 卡。
 func isMountable(n lsblkNode) bool {
-	if n.Type == "part" {
+	if n.Type == "loop" || n.Type == "rom" {
+		return false
+	}
+	if n.FSType == "" || n.FSType == "swap" {
+		return false // 无文件系统 / 交换分区不可浏览
+	}
+	switch n.Type {
+	case "part":
+		return true
+	case "disk", "mmc":
+		// 无分区表直接格式化的 U 盘 / SD 卡：有文件系统且无子分区。
+		return len(n.Children) == 0
+	default:
+		return false
+	}
+}
+
+// isSystemMount 判断挂载点是否为系统关键位置（根 / 引导分区），这类设备不应被卸载。
+func isSystemMount(mp string) bool {
+	if mp == "" {
+		return false
+	}
+	if mp == "/" {
 		return true
 	}
-	// 无分区表直接格式化的 U 盘 / SD 卡：有文件系统且无子节点。
-	if n.FSType != "" && len(n.Children) == 0 {
-		switch n.Type {
-		case "disk", "loop", "mmc":
-			return true
-		}
-	}
-	return false
+	return mp == "/boot" || strings.HasPrefix(mp, "/boot/")
 }
 
 // devicePath 返回节点的块设备路径，缺 path 字段时回落 /dev/<name>。

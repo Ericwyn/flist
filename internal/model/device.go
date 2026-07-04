@@ -11,8 +11,9 @@ type Device struct {
 	Mounted    bool   `json:"mounted"`     // 是否已挂载
 	Mountpoint string `json:"mountpoint"`  // OS 挂载目录（仅 mounted 时有值）
 	DrivePath  string `json:"drive_path"`  // 虚拟浏览路径 /drive/<id>（前端「进入」用）
-	Removable  bool   `json:"removable"`   // 是否可移动设备
+	Removable  bool   `json:"removable"`   // 是否可移动设备（USB / 热插拔）
 	Readonly   bool   `json:"readonly"`    // 是否只读
+	System     bool   `json:"system"`      // 是否为系统关键挂载（根 / 引导分区），前端禁用卸载
 }
 
 // DeviceListResult 是 GET /api/devices 的返回体。

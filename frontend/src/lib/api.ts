@@ -582,6 +582,7 @@ interface RawDevice {
   drive_path: string;
   removable: boolean;
   readonly: boolean;
+  system?: boolean;
 }
 
 interface RawDeviceListResult {
@@ -602,6 +603,7 @@ function mapDevice(r: RawDevice): Device {
     drivePath: r.drive_path,
     removable: r.removable,
     readonly: r.readonly,
+    system: r.system ?? false,
   };
 }
 
