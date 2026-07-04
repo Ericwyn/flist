@@ -13,6 +13,7 @@ import (
 	"flist/internal/config"
 	"flist/internal/server"
 	"flist/internal/service"
+	"flist/internal/service/device"
 	"flist/internal/storage"
 	"flist/internal/storage/local"
 	"flist/internal/store"
@@ -86,7 +87,7 @@ func run(logger *slog.Logger, levelVar *slog.LevelVar) error {
 		return fmt.Errorf("create upload staging dir: %w", err)
 	}
 
-	backend, err := buildBackend(cfg, rootReal, stagingDir, logger)
+	backend, deviceMux, err := buildBackend(cfg, rootReal, stagingDir, logger)
 	if err != nil {
 		return err
 	}
@@ -95,6 +96,7 @@ func run(logger *slog.Logger, levelVar *slog.LevelVar) error {
 	bookmarkSvc := service.NewBookmarkService(st, backend)
 	uploadSvc := service.NewUploadService(backend, fileLocker, cfg.MaxUpload)
 	fileOpSvc := service.NewFileOpService(fileSvc, logger)
+	deviceSvc := device.New(deviceMux, logger)
 
 	created, genPass, err := authSvc.EnsureAdmin("admin", "")
 	if err != nil {
@@ -123,6 +125,7 @@ func run(logger *slog.Logger, levelVar *slog.LevelVar) error {
 		Bookmarks: bookmarkSvc,
 		Uploads:   uploadSvc,
 		FileOps:   fileOpSvc,
+		Devices:   deviceSvc,
 		Logger:    logger,
 	})
 	if err != nil {
@@ -147,24 +150,28 @@ func run(logger *slog.Logger, levelVar *slog.LevelVar) error {
 	}
 }
 
-// buildBackend 装配存储驱动。
+// buildBackend 装配分层存储驱动，返回顶层 backend 与设备 Mux（deviceMux）。
 //
-// 当前默认形态：单个本地驱动「透明挂载」在根（与改造前的 --root 行为完全一致，
-// 路径语义不变）。这是后续扩展的唯一接入点：当引入 WebDAV / 网盘驱动后，
-// 在此构造各驱动并用 storage.NewMux 组合成「本地 + 多网盘」的虚拟命名空间，
-// 上层 service / handler 无需任何改动。
+// 命名空间布局（设备管理，Mux 套 Mux）：
 //
-// 示例（待 webdav 驱动落地后启用）：
+//	/                              顶层 rootMux（静态）
+//	├── /files/  → local.New(root, staging)   普通文件（原 --root）
+//	└── /drive/  → deviceMux（动态增删）        设备总入口
+//	      └── /drive/<id>/ → local.New(mountpoint, "")  已挂载设备（运行时注册）
 //
-//	mounts := []storage.Mount{
-//	    {Name: "local", Backend: local.New(rootReal, stagingDir)},
-//	    {Name: "box1",  Backend: webdav.New(cfg.WebDAV[0])},
-//	}
-//	return storage.NewMux(mounts), nil
+// deviceMux 初始为空，由 DeviceService 在挂载 / 卸载时动态 AddMount / RemoveMount。
+// 未来接入 WebDAV / 网盘驱动时，可在顶层 rootMux 再加固定挂载点，上层无需改动。
 //
-// stagingDir 为分片上传暂存根目录，仅本地驱动承载上传时需要（远程驱动有自己的上传实现）。
-func buildBackend(_ *config.Config, rootReal, stagingDir string, _ *slog.Logger) (storage.Backend, error) {
-	return local.New(rootReal, stagingDir), nil
+// stagingDir 为分片上传暂存根目录，仅 files 本地驱动承载上传时需要；设备后端 staging 传空。
+func buildBackend(_ *config.Config, rootReal, stagingDir string, _ *slog.Logger) (storage.Backend, *storage.Mux, error) {
+	filesBackend := local.New(rootReal, stagingDir)
+	deviceMux := storage.NewMux(nil) // 空的动态设备命名空间
+
+	rootMux := storage.NewMux([]storage.Mount{
+		{Name: "files", Backend: filesBackend},
+		{Name: "drive", Backend: deviceMux},
+	})
+	return rootMux, deviceMux, nil
 }
 
 // runUploadSweep 每小时清理一次过期上传会话与孤儿暂存分片（保留窗口 24h），直到 ctx 取消。

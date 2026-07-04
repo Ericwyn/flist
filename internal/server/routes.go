@@ -8,6 +8,7 @@ import (
 	"flist/internal/handler"
 	mw "flist/internal/middleware"
 	"flist/internal/service"
+	"flist/internal/service/device"
 	"flist/web"
 
 	"github.com/go-chi/chi/v5"
@@ -21,6 +22,7 @@ type Deps struct {
 	Bookmarks *service.BookmarkService
 	Uploads   *service.UploadService
 	FileOps   *service.FileOpService
+	Devices   device.Service
 	Logger    *slog.Logger
 }
 
@@ -38,10 +40,11 @@ func NewRouter(d Deps) (http.Handler, error) {
 
 	authHandler := handler.NewAuthHandler(d.Auth, d.Config.SessionTTL)
 	twofactorHandler := handler.NewTwoFactorHandler(d.Auth)
-	systemHandler := handler.NewSystemHandler()
+	systemHandler := handler.NewSystemHandler(d.Devices)
 	fileHandler := handler.NewFileHandler(d.Files, d.Uploads, d.Logger)
 	fileOpHandler := handler.NewFileOpHandler(d.FileOps, d.Logger)
 	bookmarkHandler := handler.NewBookmarkHandler(d.Bookmarks, d.Logger)
+	deviceHandler := handler.NewDeviceHandler(d.Devices, d.Logger)
 
 	// 写操作限流：10/s per IP（见 0.backend-design.md §9.3）。
 	writeLimit := mw.NewWriteRateLimiter(10, 10)
@@ -123,6 +126,15 @@ func NewRouter(d Deps) (http.Handler, error) {
 			protected.Put("/bookmarks/reorder", bookmarkHandler.Reorder) // 须先于 /{id} 注册
 			protected.Put("/bookmarks/{id}", bookmarkHandler.Update)
 			protected.Delete("/bookmarks/{id}", bookmarkHandler.Delete)
+
+			// 设备管理（Linux；非 Linux / 命令缺失时 List 返回 supported=false，
+			// 挂 / 卸返回不支持码）。列表只读，挂 / 卸为写操作（套写限流 10/s）。
+			protected.Get("/devices", deviceHandler.List)
+			protected.Group(func(wr chi.Router) {
+				wr.Use(writeLimit)
+				wr.Post("/devices/mount", deviceHandler.Mount)
+				wr.Post("/devices/unmount", deviceHandler.Unmount)
+			})
 		})
 
 		// 未匹配的 API 路径返回 404（统一信封）。

@@ -89,9 +89,10 @@ type UploadCompleteResult struct {
 // 自「文件编辑与路径级容量优化」起，磁盘容量字段移出本结构，统一由
 // GET /api/fs/space?path=... 按当前路径所在存储返回；本结构只承载系统级信息。
 type SystemInfo struct {
-	OS         string    `json:"os"`          // 运行平台（runtime.GOOS）
-	Arch       string    `json:"arch"`        // 体系结构（runtime.GOARCH）
-	ServerTime time.Time `json:"server_time"` // 服务端当前时间
+	OS               string    `json:"os"`                // 运行平台（runtime.GOOS）
+	Arch             string    `json:"arch"`              // 体系结构（runtime.GOARCH）
+	ServerTime       time.Time `json:"server_time"`       // 服务端当前时间
+	DeviceManagement bool      `json:"device_management"` // 设备管理是否可用（Linux + lsblk/udisksctl 存在）
 }
 
 // FileRevision 是保存文本时用于乐观锁的不透明版本 token。

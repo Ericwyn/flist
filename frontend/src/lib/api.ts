@@ -3,7 +3,7 @@ import {
   FileEntry, ListResult, PreviewResult, ListOptions,
   OpResult, SearchResult, SearchHit, SearchOptions, Bookmark,
   UploadInitResult, FileContent, SaveContentResult, SpaceInfo, FileRevision,
-  FileOpStartResult,
+  FileOpStartResult, SystemInfo, Device,
 } from '../types';
 import { parentPath, joinPath } from './path';
 
@@ -527,23 +527,82 @@ export const api = {
   },
 
   system: {
-    // info 获取纯系统级信息（os / arch / 服务端时间）。磁盘容量改用 fs.space。
+    // info 获取纯系统级信息（os / arch / 服务端时间 / 设备管理能力）。磁盘容量改用 fs.space。
     async info(): Promise<SystemInfo> {
       const raw = await request<RawSystemInfo>('/api/system/info');
       return {
         os: raw.os,
         arch: raw.arch,
         serverTime: raw.server_time,
+        deviceManagement: raw.device_management ?? false,
       };
+    },
+  },
+
+  devices: {
+    // list 列出块设备 / 分区及挂载状态。supported=false 表示当前平台不支持。
+    async list(): Promise<{ supported: boolean; devices: Device[] }> {
+      const raw = await request<RawDeviceListResult>('/api/devices');
+      return {
+        supported: raw.supported,
+        devices: (raw.devices || []).map(mapDevice),
+      };
+    },
+
+    // mount 挂载指定分区，返回更新后的设备状态。
+    async mount(device: string): Promise<Device> {
+      const raw = await request<RawDevice>('/api/devices/mount', {
+        method: 'POST',
+        body: { device },
+      });
+      return mapDevice(raw);
+    },
+
+    // unmount 卸载指定分区，返回更新后的设备状态。
+    async unmount(device: string): Promise<Device> {
+      const raw = await request<RawDevice>('/api/devices/unmount', {
+        method: 'POST',
+        body: { device },
+      });
+      return mapDevice(raw);
     },
   },
 };
 
-// SystemInfo 是纯系统级信息（容量信息已移至 fs.space）。
-export interface SystemInfo {
-  os: string;
-  arch: string;
-  serverTime: string;
+// 设备接口原始字段（snake_case）。
+interface RawDevice {
+  device: string;
+  id: string;
+  name: string;
+  label: string;
+  fstype: string;
+  size: number;
+  mounted: boolean;
+  mountpoint: string;
+  drive_path: string;
+  removable: boolean;
+  readonly: boolean;
+}
+
+interface RawDeviceListResult {
+  supported: boolean;
+  devices: RawDevice[];
+}
+
+function mapDevice(r: RawDevice): Device {
+  return {
+    device: r.device,
+    id: r.id,
+    name: r.name,
+    label: r.label,
+    fstype: r.fstype,
+    size: r.size,
+    mounted: r.mounted,
+    mountpoint: r.mountpoint,
+    drivePath: r.drive_path,
+    removable: r.removable,
+    readonly: r.readonly,
+  };
 }
 
 // parseContentDispositionFilename 从 Content-Disposition 头解析文件名，
@@ -670,6 +729,7 @@ interface RawSystemInfo {
   os: string;
   arch: string;
   server_time: string;
+  device_management?: boolean;
 }
 
 interface RawFileContent {

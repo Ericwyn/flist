@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"flist/internal/model"
@@ -109,14 +111,70 @@ func TestMux_WriteAtMountLevelRejected(t *testing.T) {
 	}
 }
 
-func TestMux_CrossMountMoveNotSupported(t *testing.T) {
+func TestMux_CrossMountCopyFile(t *testing.T) {
 	mux := storage.NewMux([]storage.Mount{
-		newLocalMount(t, "local", map[string]string{"a.txt": "a"}),
+		newLocalMount(t, "local", map[string]string{"a.txt": "hello world"}),
 		newLocalMount(t, "box1", nil),
 	})
-	err := mux.Move(context.Background(), "/local/a.txt", "/box1/a.txt")
-	if err != storage.ErrNotSupported {
-		t.Errorf("cross-mount move should be ErrNotSupported, got %v", err)
+	if err := mux.Copy(context.Background(), "/local/a.txt", "/box1/a.txt"); err != nil {
+		t.Fatalf("cross-mount copy should succeed, got %v", err)
+	}
+	// 目标存在且内容一致。
+	info, err := mux.Stat(context.Background(), "/box1/a.txt")
+	if err != nil {
+		t.Fatalf("copied file should exist, got %v", err)
+	}
+	if info.Size != int64(len("hello world")) {
+		t.Errorf("copied size mismatch: %d", info.Size)
+	}
+	// 源仍在（copy 不删源）。
+	if _, err := mux.Stat(context.Background(), "/local/a.txt"); err != nil {
+		t.Errorf("source should remain after copy, got %v", err)
+	}
+}
+
+func TestMux_CrossMountCopyDir(t *testing.T) {
+	mux := storage.NewMux([]storage.Mount{
+		newLocalMount(t, "local", map[string]string{
+			"dir/a.txt":     "aaa",
+			"dir/sub/b.txt": "bbb",
+		}),
+		newLocalMount(t, "box1", nil),
+	})
+	if err := mux.Copy(context.Background(), "/local/dir", "/box1/dir"); err != nil {
+		t.Fatalf("cross-mount dir copy should succeed, got %v", err)
+	}
+	for _, p := range []string{"/box1/dir/a.txt", "/box1/dir/sub/b.txt"} {
+		if _, err := mux.Stat(context.Background(), p); err != nil {
+			t.Errorf("expected %s to exist after dir copy, got %v", p, err)
+		}
+	}
+}
+
+func TestMux_CrossMountMove(t *testing.T) {
+	mux := storage.NewMux([]storage.Mount{
+		newLocalMount(t, "local", map[string]string{"a.txt": "data"}),
+		newLocalMount(t, "box1", nil),
+	})
+	if err := mux.Move(context.Background(), "/local/a.txt", "/box1/a.txt"); err != nil {
+		t.Fatalf("cross-mount move should succeed, got %v", err)
+	}
+	if _, err := mux.Stat(context.Background(), "/box1/a.txt"); err != nil {
+		t.Errorf("moved file should exist at destination, got %v", err)
+	}
+	// move = 复制 + 删源，源应消失。
+	if _, err := mux.Stat(context.Background(), "/local/a.txt"); err != storage.ErrNotFound {
+		t.Errorf("source should be removed after move, got %v", err)
+	}
+}
+
+func TestMux_CrossMountCopyExists(t *testing.T) {
+	mux := storage.NewMux([]storage.Mount{
+		newLocalMount(t, "local", map[string]string{"a.txt": "a"}),
+		newLocalMount(t, "box1", map[string]string{"a.txt": "existing"}),
+	})
+	if err := mux.Copy(context.Background(), "/local/a.txt", "/box1/a.txt"); err != storage.ErrExists {
+		t.Errorf("copy onto existing target should be ErrExists, got %v", err)
 	}
 }
 
@@ -212,5 +270,99 @@ func TestMux_Usage(t *testing.T) {
 	// 未知挂载点 → ErrNotFound。
 	if _, _, err := mux.Usage(context.Background(), "/ghost"); err != storage.ErrNotFound {
 		t.Errorf("unknown mount usage should be ErrNotFound, got %v", err)
+	}
+}
+
+func TestMux_AddRemoveMount(t *testing.T) {
+	mux := storage.NewMux(nil) // 空命名空间，模拟设备 Mux
+	if len(mux.Mounts()) != 0 {
+		t.Fatalf("empty mux should have no mounts")
+	}
+
+	dev := newLocalMount(t, "sdc1", map[string]string{"file.txt": "x"})
+	if err := mux.AddMount(dev); err != nil {
+		t.Fatalf("AddMount: %v", err)
+	}
+	// 重复同名 → ErrExists。
+	if err := mux.AddMount(dev); err != storage.ErrExists {
+		t.Errorf("duplicate AddMount should be ErrExists, got %v", err)
+	}
+
+	// route / List 反映新挂载点。
+	if _, err := mux.Stat(context.Background(), "/sdc1/file.txt"); err != nil {
+		t.Errorf("mounted device file should be reachable, got %v", err)
+	}
+	items, err := mux.List(context.Background(), "/", false)
+	if err != nil || len(items) != 1 || items[0].Name != "sdc1" {
+		t.Errorf("root should list the added mount, got %+v err=%v", items, err)
+	}
+
+	// 移除后返回被移除的 backend，且不再可达。
+	if b := mux.RemoveMount("sdc1"); b == nil {
+		t.Errorf("RemoveMount should return the removed backend")
+	}
+	if _, err := mux.Stat(context.Background(), "/sdc1/file.txt"); err != storage.ErrNotFound {
+		t.Errorf("removed mount should be unreachable, got %v", err)
+	}
+	// 幂等移除。
+	if b := mux.RemoveMount("sdc1"); b != nil {
+		t.Errorf("removing absent mount should return nil")
+	}
+}
+
+func TestMux_ConcurrentAddRemoveList(t *testing.T) {
+	mux := storage.NewMux(nil)
+	base := newLocalMount(t, "base", map[string]string{"a.txt": "a"})
+	if err := mux.AddMount(base); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			name := "dev" + string(rune('a'+n%10))
+			_ = mux.AddMount(storage.Mount{Name: name, Backend: base.Backend})
+			_, _ = mux.List(context.Background(), "/", false)
+			_ = mux.Mounts()
+			mux.RemoveMount(name)
+		}(i)
+	}
+	// 并发读：持续列举 base 挂载点。
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = mux.Stat(context.Background(), "/base/a.txt")
+		}()
+	}
+	wg.Wait()
+}
+
+// cancelFirstReadBackend 包装一个 Backend，在首次 Open 的文件被读取时立刻取消 ctx，
+// 用于验证跨挂载复制的取消 + 半成品清理。
+func TestMux_CrossMountCopyCancel(t *testing.T) {
+	// 用较大内容确保 io.Copy 分多次 Write，取消能在中途生效。
+	big := strings.Repeat("0123456789", 200000) // ~2MB
+	mux := storage.NewMux([]storage.Mount{
+		newLocalMount(t, "local", map[string]string{"big.bin": big}),
+		newLocalMount(t, "box1", nil),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // 立即取消：复制应在第一次 ctx 检查即中止
+
+	err := mux.CopyWithProgress(ctx, "/local/big.bin", "/box1/big.bin", func(int64) {})
+	if err == nil {
+		t.Fatalf("cancelled copy should return error")
+	}
+	// 目标不应残留半成品（streamWriter 中途放弃时清理）。
+	if _, serr := mux.Stat(context.Background(), "/box1/big.bin"); serr != storage.ErrNotFound {
+		t.Errorf("cancelled copy should leave no target file, got %v", serr)
+	}
+	// 源保留。
+	if _, serr := mux.Stat(context.Background(), "/local/big.bin"); serr != nil {
+		t.Errorf("source must remain after cancelled copy, got %v", serr)
 	}
 }

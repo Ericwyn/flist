@@ -45,6 +45,7 @@ var (
 	_ storage.Uploader        = (*Local)(nil)
 	_ storage.ContentEditor   = (*Local)(nil)
 	_ storage.ProgressCopier  = (*Local)(nil)
+	_ storage.StreamWriter    = (*Local)(nil)
 )
 
 func (b *Local) Name() string { return "local" }

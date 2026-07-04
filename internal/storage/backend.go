@@ -126,6 +126,18 @@ type ContentEditor interface {
 	WriteText(ctx context.Context, p string, content []byte, expected model.FileRevision, force bool) (*model.SaveContentResult, error)
 }
 
+// StreamWriter 是可选接口：驱动提供「打开一个可写入的目标文件流」，供跨后端流式复制
+//（Mux 跨挂载点 Copy/Move）使用。返回的 WriteCloser 在 Close 时原子落地（同目录临时文件 +
+// rename）；写入中途出错或调用方在 Close 前放弃时，实现须负责清理半成品临时文件。
+//
+// 语义约定：
+//   - 落点已存在返回 ErrExists（与 Copy/Move「不覆盖」一致）；
+//   - 父目录不存在返回 ErrNotFound；
+//   - 路径越界 / 非法名返回对应错误词表值。
+type StreamWriter interface {
+	OpenWrite(ctx context.Context, p string) (io.WriteCloser, error)
+}
+
 // Uploader 是可选接口：驱动提供分片上传的物理存取（暂存 / 合并 / 清理）。
 //
 // 会话元数据（已收分片集合、文件指纹、user 归属、过期时间）由 service 的 UploadService

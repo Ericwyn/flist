@@ -103,32 +103,34 @@ interface FsState {
   clearClipboard: () => void;
 }
 
-// URL_PREFIX 为文件浏览路由的统一前缀，避免与 /api、/assets 等真实路径冲突
-// （例如 root 下恰好存在名为 api / assets 的文件夹）。
-const URL_PREFIX = '/files';
+// DEFAULT_PATH 为登录后的默认落地路径。设备管理路径分层后，普通文件收在 /files 下，
+// 外接设备收在 /drive 下；虚拟根 / 仅列出这两个挂载点，正常不停留。
+const DEFAULT_PATH = '/files';
 
-// pathToUrl / urlToPath 在浏览器 URL pathname 与 API 路径间转换。
-// 采用 History 路由：/files 即根，/files/Roboto_Mono/static 即目录 /Roboto_Mono/static
-//（逐段编码以兼容空格等特殊字符，保留 /）。
+// pathToUrl / urlToPath 在浏览器 URL pathname 与虚拟 API 路径间转换。
+// 设备管理路径分层后，API 路径本身即以 /files 或 /drive 开头，与 URL pathname 一一对应，
+// 仅需逐段编码 / 解码以兼容空格等特殊字符。虚拟根 / 归一到 /files。
 function pathToUrl(p: string): string {
-  if (p === '/' || p === '') return URL_PREFIX;
-  return URL_PREFIX + '/' + p.replace(/^\//, '').split('/').map(encodeURIComponent).join('/');
+  if (p === '/' || p === '') return DEFAULT_PATH;
+  return '/' + p.replace(/^\//, '').split('/').map(encodeURIComponent).join('/');
 }
 function urlToPath(pathname: string): string {
-  // 仅 /files 前缀下的路径视为目录路径；其余（如登录后短暂停留的 /）一律回到根。
-  if (pathname === URL_PREFIX || pathname === URL_PREFIX + '/') return '/';
-  if (!pathname.startsWith(URL_PREFIX + '/')) return '/';
-  const rest = pathname.slice(URL_PREFIX.length).replace(/^\//, '');
-  if (!rest) return '/';
+  const raw = pathname.replace(/^\//, '');
+  if (!raw) return DEFAULT_PATH;
+  let segs: string[];
   try {
-    return '/' + rest.split('/').map(decodeURIComponent).join('/');
+    segs = raw.split('/').map(decodeURIComponent);
   } catch {
-    return '/';
+    return DEFAULT_PATH;
   }
+  // 仅 files / drive 是有效挂载点前缀；其余（含旧的根相对 URL）回落到默认落地页。
+  if (segs[0] !== 'files' && segs[0] !== 'drive') return DEFAULT_PATH;
+  return '/' + segs.join('/');
 }
 
 function pathName(p: string): string {
-  if (p === '/' || p === '') return '我的文件';
+  if (p === '/files' || p === '/' || p === '') return '我的文件';
+  if (p === '/drive') return '设备';
   const trimmed = p.replace(/\/$/, '');
   return trimmed.slice(trimmed.lastIndexOf('/') + 1) || trimmed;
 }
@@ -182,7 +184,7 @@ function pushSearchHistory(prev: string[], query: string): string[] {
 }
 
 export const useFsStore = create<FsState>((set, get) => ({
-  currentPath: '/',
+  currentPath: DEFAULT_PATH,
   entries: [],
   total: 0,
   loading: false,
@@ -191,7 +193,7 @@ export const useFsStore = create<FsState>((set, get) => ({
   sort: 'name',
   order: 'asc',
   showHidden: loadShowHidden(),
-  history: ['/'],
+  history: [DEFAULT_PATH],
   historyIndex: 0,
   selected: new Set<string>(),
   selectionAnchor: null,

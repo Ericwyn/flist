@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { HardDrive, Home, Settings, StarOff, Pencil, Trash2, Plus, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react';
+import { HardDrive, Home, Settings, StarOff, Pencil, Trash2, Plus, AlertTriangle, ChevronDown, ChevronUp, Usb } from 'lucide-react';
 import { useFsStore } from '../fsStore';
 import { useAuthStore } from '../authStore';
 import { useBookmarkStore } from '../bookmarkStore';
@@ -7,6 +7,7 @@ import { useStore } from '../store';
 import { cn, formatBytes } from '../lib/utils';
 import { api } from '../lib/api';
 import { SettingsModal } from './SettingsModal';
+import { DeviceManager } from './DeviceManager';
 import { InputModal } from './InputModal';
 import { ConfirmModal } from './ConfirmModal';
 import { ContextMenu, MenuItem } from './ContextMenu';
@@ -20,6 +21,9 @@ export function Sidebar() {
   const { items, load, add, rename, remove, reorder } = useBookmarkStore();
   const { recentAccess, clearRecentAccess, recordRecentAccess, recentEnabled } = useStore();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [deviceOpen, setDeviceOpen] = useState(false);
+  // 设备管理能力：启动时探测一次（Linux + lsblk/udisksctl 可用时为 true），决定是否展示入口。
+  const [deviceManagement, setDeviceManagement] = useState(false);
 
   // 路径级容量：随当前目录与写操作（spaceVersion）刷新。
   const [space, setSpace] = useState<SpaceInfo | null>(null);
@@ -37,11 +41,18 @@ export function Sidebar() {
   const BOOKMARK_PREVIEW_LIMIT = 10;
   const [bookmarksExpanded, setBookmarksExpanded] = useState(false);
 
-  const atRoot = currentPath === '/';
+  // atRoot：处于普通文件的顶层（/files）或虚拟根（/），此时不可收藏当前目录。
+  const atRoot = currentPath === '/files' || currentPath === '/';
+  // filesActive：「我的文件」高亮判定——当前在 /files 命名空间下（含子目录）。
+  const filesActive = currentPath === '/files' || currentPath.startsWith('/files/') || currentPath === '/';
 
-  // 登录后加载收藏列表。
+  // 登录后加载收藏列表，并探测设备管理能力（决定是否展示入口）。
   useEffect(() => {
     load();
+    api.system
+      .info()
+      .then((info) => setDeviceManagement(info.deviceManagement))
+      .catch(() => setDeviceManagement(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -143,10 +154,10 @@ export function Sidebar() {
           </h3>
           <div className="space-y-0.5">
             <button
-              onClick={() => navigate('/')}
+              onClick={() => navigate('/files')}
               className={cn(
                 'w-full flex items-center px-2 py-1.5 rounded-lg text-sm transition-colors',
-                atRoot
+                filesActive
                   ? 'bg-blue-50 text-blue-700 font-medium dark:bg-blue-900/40 dark:text-blue-300'
                   : 'text-slate-600 dark:text-slate-400 hover:bg-white dark:hover:bg-slate-800',
               )}
@@ -154,6 +165,15 @@ export function Sidebar() {
               <Home className="w-4 h-4 mr-2.5 opacity-80" />
               <span>我的文件</span>
             </button>
+            {deviceManagement && (
+              <button
+                onClick={() => setDeviceOpen(true)}
+                className="w-full flex items-center px-2 py-1.5 rounded-lg text-sm transition-colors text-slate-600 dark:text-slate-400 hover:bg-white dark:hover:bg-slate-800"
+              >
+                <Usb className="w-4 h-4 mr-2.5 opacity-80" />
+                <span>设备管理</span>
+              </button>
+            )}
           </div>
         </section>
 
@@ -364,6 +384,8 @@ export function Sidebar() {
       </div>
 
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+
+      {deviceOpen && <DeviceManager onClose={() => setDeviceOpen(false)} />}
 
       {menu && (
         <ContextMenu x={menu.x} y={menu.y} items={menuItems()} onClose={() => setMenu(null)} />

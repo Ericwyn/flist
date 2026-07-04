@@ -50,6 +50,11 @@ CREATE TABLE IF NOT EXISTS bookmarks (
 
 CREATE INDEX IF NOT EXISTS idx_bookmarks_user ON bookmarks(user_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_bookmarks_user_path ON bookmarks(user_id, path);
+
+CREATE TABLE IF NOT EXISTS schema_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 `
 
 // Open 在 dataDir 下打开（或创建）SQLite 主库，开启 WAL + busy_timeout + 外键，
@@ -107,7 +112,51 @@ func (s *Store) migrate() error {
 	if err := s.migrateAddColumns(); err != nil {
 		return fmt.Errorf("migrate add columns: %w", err)
 	}
+	if err := s.migrateBookmarkFilesPrefix(); err != nil {
+		return fmt.Errorf("migrate bookmark files prefix: %w", err)
+	}
 	return nil
+}
+
+// metaGet 读取 schema_meta 中的值，不存在返回空串。
+func (s *Store) metaGet(key string) string {
+	var v string
+	err := s.db.QueryRow(`SELECT value FROM schema_meta WHERE key = ?`, key).Scan(&v)
+	if err != nil {
+		return ""
+	}
+	return v
+}
+
+// migrateBookmarkFilesPrefix 为存量收藏路径加 /files 前缀（设备管理路径分层，A1 布局）。
+//
+// 幂等：以 schema_meta 版本标记控制，仅执行一次。安全：仅处理不以 /files 或 /drive
+// 开头的路径，避免重复加前缀或误伤设备路径。根 "/" 收藏归一为 "/files"。
+// 可逆：回滚脚本见 docs spec §5.4。
+func (s *Store) migrateBookmarkFilesPrefix() error {
+	const key = "migration_bookmark_files_prefix"
+	if s.metaGet(key) == "1" {
+		return nil // 已迁移，幂等跳过
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`
+		UPDATE bookmarks
+		SET path = CASE WHEN path = '/' THEN '/files'
+		                ELSE '/files' || path END
+		WHERE path NOT LIKE '/files%' AND path NOT LIKE '/drive%'`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`INSERT OR REPLACE INTO schema_meta(key, value) VALUES(?, ?)`, key, "1"); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // migrateAddColumns 对已有数据库补列（CREATE TABLE IF NOT EXISTS 不会为已存在的表添加新列）。

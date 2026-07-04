@@ -148,6 +148,29 @@ export interface Clipboard {
   paths: string[];
 }
 
+// 系统信息，对应后端 model.SystemInfo。
+export interface SystemInfo {
+  os: string;
+  arch: string;
+  serverTime: string;
+  deviceManagement: boolean; // 设备管理是否可用（Linux + lsblk/udisksctl）
+}
+
+// 块设备 / 分区，对应后端 model.Device。
+export interface Device {
+  device: string; // /dev/sdc1
+  id: string; // 挂载点名（/drive/<id>）
+  name: string;
+  label: string;
+  fstype: string;
+  size: number;
+  mounted: boolean;
+  mountpoint: string;
+  drivePath: string; // /drive/<id>，前端「进入」用
+  removable: boolean;
+  readonly: boolean;
+}
+
 // 上传初始化返回，对应后端 model.UploadInitResult。
 export interface UploadInitResult {
   uploadId: string;

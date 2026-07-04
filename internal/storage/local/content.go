@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"mime"
 	"os"
 	"path"
@@ -125,6 +126,81 @@ func (b *Local) WriteText(_ context.Context, p string, content []byte, expected 
 		ModTime:  newFi.ModTime(),
 		Revision: revisionOf(content),
 	}, nil
+}
+
+// OpenWrite 打开一个可写入的目标文件流（storage.StreamWriter），供跨后端流式复制使用。
+// 落点不得已存在（ErrExists），父目录须存在。写入到同目录临时文件，Close 时原子 rename
+// 落地；写入未完成即被放弃（未 rename 前调用 Close 且已出错，或进程中断）时清理临时文件。
+func (b *Local) OpenWrite(_ context.Context, p string) (io.WriteCloser, error) {
+	cleaned := util.CleanAPIPath(p)
+	if cleaned == "/" {
+		return nil, storage.ErrBadOp
+	}
+	if err := util.ValidateName(path.Base(cleaned)); err != nil {
+		return nil, storage.ErrInvalidName
+	}
+	local, err := util.SafeResolve(b.rootReal, cleaned)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	if _, err := os.Lstat(local); err == nil {
+		return nil, storage.ErrExists // 落点不得已存在（不覆盖）
+	}
+	dir := filepath.Dir(local)
+	if _, err := os.Stat(dir); err != nil {
+		return nil, mapErr(err) // 父目录不存在
+	}
+	tmp, err := os.CreateTemp(dir, ".flist-copy-*.tmp")
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return &streamWriter{tmp: tmp, tmpName: tmp.Name(), target: local}, nil
+}
+
+// streamWriter 把字节写入同目录临时文件，Close 时 fsync 并原子 rename 到 target。
+// 出错或未完成时清理临时文件，绝不产生半成品目标文件。
+type streamWriter struct {
+	tmp     *os.File
+	tmpName string
+	target  string
+	failed  bool
+	done    bool
+}
+
+func (w *streamWriter) Write(b []byte) (int, error) {
+	n, err := w.tmp.Write(b)
+	if err != nil {
+		w.failed = true
+	}
+	return n, err
+}
+
+// Close 落地临时文件为目标：出错路径清理临时文件；成功路径 fsync + rename。
+// 幂等：重复 Close 无副作用。
+func (w *streamWriter) Close() error {
+	if w.done {
+		return nil
+	}
+	w.done = true
+	if w.failed {
+		w.tmp.Close()
+		_ = os.Remove(w.tmpName)
+		return nil
+	}
+	if err := w.tmp.Sync(); err != nil {
+		w.tmp.Close()
+		_ = os.Remove(w.tmpName)
+		return mapErr(err)
+	}
+	if err := w.tmp.Close(); err != nil {
+		_ = os.Remove(w.tmpName)
+		return mapErr(err)
+	}
+	if err := os.Rename(w.tmpName, w.target); err != nil {
+		_ = os.Remove(w.tmpName)
+		return mapErr(err)
+	}
+	return nil
 }
 
 // atomicWrite 在 target 同目录写临时文件，fsync 后原子 rename 覆盖，避免写中途损坏既有文件。

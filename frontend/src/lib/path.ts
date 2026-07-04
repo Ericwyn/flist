@@ -50,15 +50,22 @@ export function baseName(p: string): string {
   return p.replace(/\/$/, '').slice(p.replace(/\/$/, '').lastIndexOf('/') + 1);
 }
 
-// breadcrumbs 将路径切分为面包屑片段（含根）。
+// breadcrumbs 将虚拟路径切分为面包屑片段。首段为挂载点前缀，映射为友好名称：
+// /files → 我的文件，/drive → 设备。其余段用原始名。
 export function breadcrumbs(p: string): { name: string; path: string }[] {
-  const crumbs = [{ name: '我的文件', path: '/' }];
-  if (p === '/' || p === '') return crumbs;
+  // 顶层虚拟根：仅给一个「我的文件」入口（正常不会停留在此）。
+  if (p === '/' || p === '') return [{ name: '我的文件', path: '/files' }];
   const parts = p.replace(/^\//, '').split('/');
+  const crumbs: { name: string; path: string }[] = [];
   let acc = '';
-  for (const part of parts) {
+  parts.forEach((part, i) => {
     acc += `/${part}`;
-    crumbs.push({ name: part, path: acc });
-  }
+    let name = part;
+    if (i === 0) {
+      if (part === 'files') name = '我的文件';
+      else if (part === 'drive') name = '设备';
+    }
+    crumbs.push({ name, path: acc });
+  });
   return crumbs;
 }

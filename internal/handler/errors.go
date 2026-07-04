@@ -35,6 +35,11 @@ const (
 	CodeFileOpBusy         = 2018
 	CodeBookmarkExists     = 3001
 	CodeBookmarkNotFound   = 3002
+	CodeDeviceUnsupported  = 3101
+	CodeDeviceNotFound     = 3102
+	CodeDeviceBusy         = 3103
+	CodeDeviceForbidden    = 3104
+	CodeDeviceCommand      = 3105
 	CodeBadRequest         = 4000
 	CodeInternalError      = 9001
 	CodeRateLimited        = 9002
