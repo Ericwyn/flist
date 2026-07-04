@@ -40,6 +40,7 @@ var _ Walker = (*Mux)(nil)
 var _ Usager = (*Mux)(nil)
 var _ ContentEditor = (*Mux)(nil)
 var _ ProgressCopier = (*Mux)(nil)
+var _ Uploader = (*Mux)(nil)
 
 // NewMux 构造组合驱动。mounts 顺序决定虚拟根列表的展示顺序（可为 nil，构造空命名空间，
 // 后续用 AddMount 动态注册，如设备 Mux）。
@@ -451,6 +452,75 @@ func (m *Mux) WriteText(ctx context.Context, p string, content []byte, expected 
 	}
 	res.Path = joinVirtual(name, res.Path)
 	return res, nil
+}
+
+// stagingBackend 返回承载分片上传暂存的挂载点后端：取第一个实现 Uploader 的挂载点
+//（挂载顺序即优先级，本地 files 后端排在最前，持有 DATA_DIR 下的全局暂存目录）。
+//
+// 分片暂存目录与落点 root 解耦，且 stage/abort/sweep 这类操作只有 uploadID、没有落点
+// 路径信息，无法按路由分发，故统一委托给这一暂存后端。MergeUpload 有 dst，按路由分发，
+// 并要求落点后端即暂存后端（读的是同一 staging），否则拒绝。
+func (m *Mux) stagingBackend() Backend {
+	for _, mt := range m.snapshot() {
+		if _, ok := mt.Backend.(Uploader); ok {
+			return mt.Backend
+		}
+	}
+	return nil
+}
+
+// StageChunk 将分片写入暂存后端（storage.Uploader）。无暂存后端时返回 ErrNotSupported。
+func (m *Mux) StageChunk(ctx context.Context, uploadID string, index int, r io.Reader) (int64, error) {
+	b := m.stagingBackend()
+	if b == nil {
+		return 0, ErrNotSupported
+	}
+	return b.(Uploader).StageChunk(ctx, uploadID, index, r)
+}
+
+// MergeUpload 把暂存分片合并到 dst：路由到落点后端并委托其 MergeUpload（rel 为相对该后端根
+// 的路径）。要求落点后端即暂存后端（同一 staging 目录，能读到 StageChunk 落下的分片），
+// 否则返回 ErrNotSupported——如上传到不承载暂存的设备挂载点。
+func (m *Mux) MergeUpload(ctx context.Context, uploadID, dst string, totalChunks int, overwrite bool) error {
+	_, b, rel, err := m.route(dst)
+	if err != nil {
+		return err
+	}
+	if b == nil || rel == "/" {
+		return ErrBadOp
+	}
+	u, ok := b.(Uploader)
+	if !ok || b != m.stagingBackend() {
+		return ErrNotSupported
+	}
+	return u.MergeUpload(ctx, uploadID, rel, totalChunks, overwrite)
+}
+
+// AbortChunk 删除暂存后端中单个分片的暂存文件（幂等）。
+func (m *Mux) AbortChunk(uploadID string, index int) error {
+	b := m.stagingBackend()
+	if b == nil {
+		return nil
+	}
+	return b.(Uploader).AbortChunk(uploadID, index)
+}
+
+// AbortUpload 删除暂存后端中某次上传的暂存区（幂等）。
+func (m *Mux) AbortUpload(uploadID string) error {
+	b := m.stagingBackend()
+	if b == nil {
+		return nil
+	}
+	return b.(Uploader).AbortUpload(uploadID)
+}
+
+// SweepStaging 委托暂存后端清理 mtime 超期的孤儿暂存目录，返回清理数量。
+func (m *Mux) SweepStaging(maxAge time.Duration) (int, error) {
+	b := m.stagingBackend()
+	if b == nil {
+		return 0, nil
+	}
+	return b.(Uploader).SweepStaging(maxAge)
 }
 
 // Walk 在虚拟根时遍历所有挂载点（relPath 以挂载点名为前缀）；在挂载点子树时

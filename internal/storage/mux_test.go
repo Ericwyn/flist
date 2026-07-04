@@ -366,3 +366,70 @@ func TestMux_CrossMountCopyCancel(t *testing.T) {
 		t.Errorf("source must remain after cancelled copy, got %v", serr)
 	}
 }
+
+// TestMux_UploaderRoundTrip 复现「设备管理」装配下的上传回归：外层 rootMux 套一个带
+// staging 的 files 后端与一个空设备 Mux。此前 Mux 未实现 Uploader，UploadService 的
+// 类型断言失败，所有上传返回 not_supported。此测试确保经 Mux 的分片暂存 + 合并可用。
+func TestMux_UploaderRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	realRoot, err := util.ResolveRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staging := t.TempDir()
+	filesBackend := local.New(realRoot, staging)
+	deviceMux := storage.NewMux(nil)
+	rootMux := storage.NewMux([]storage.Mount{
+		{Name: "files", Backend: filesBackend},
+		{Name: "drive", Backend: deviceMux},
+	})
+
+	up, ok := interface{}(rootMux).(storage.Uploader)
+	if !ok {
+		t.Fatal("rootMux must implement storage.Uploader")
+	}
+
+	ctx := context.Background()
+	const uploadID = "abcdef0123456789abcdef0123456789" // 32 hex，满足 validUploadID
+	if _, err := up.StageChunk(ctx, uploadID, 0, strings.NewReader("hello ")); err != nil {
+		t.Fatalf("StageChunk 0: %v", err)
+	}
+	if _, err := up.StageChunk(ctx, uploadID, 1, strings.NewReader("world")); err != nil {
+		t.Fatalf("StageChunk 1: %v", err)
+	}
+
+	// 落点位于 files 挂载点下（对应用户的 /files/... 目标）。
+	if err := up.MergeUpload(ctx, uploadID, "/files/out.txt", 2, false); err != nil {
+		t.Fatalf("MergeUpload: %v", err)
+	}
+	got, rerr := os.ReadFile(filepath.Join(realRoot, "out.txt"))
+	if rerr != nil {
+		t.Fatalf("read merged file: %v", rerr)
+	}
+	if string(got) != "hello world" {
+		t.Errorf("merged content = %q, want %q", got, "hello world")
+	}
+}
+
+// TestMux_UploaderMergeToNonStagingRejected 确保合并到「不承载暂存」的挂载点被拒绝：
+// 设备挂载点的 staging 为空，读不到 files 后端暂存的分片，应返回 ErrNotSupported 而非
+// 静默产生空 / 损坏文件。
+func TestMux_UploaderMergeToNonStagingRejected(t *testing.T) {
+	staging := t.TempDir()
+	filesReal, _ := util.ResolveRoot(t.TempDir())
+	deviceReal, _ := util.ResolveRoot(t.TempDir())
+	rootMux := storage.NewMux([]storage.Mount{
+		{Name: "files", Backend: local.New(filesReal, staging)},
+		{Name: "drive", Backend: local.New(deviceReal, "")}, // 设备后端无暂存
+	})
+	up := interface{}(rootMux).(storage.Uploader)
+
+	ctx := context.Background()
+	const uploadID = "abcdefabcdefabcdefabcdefabcdef01"
+	if _, err := up.StageChunk(ctx, uploadID, 0, strings.NewReader("data")); err != nil {
+		t.Fatalf("StageChunk: %v", err)
+	}
+	if err := up.MergeUpload(ctx, uploadID, "/drive/x.txt", 1, false); err != storage.ErrNotSupported {
+		t.Errorf("merge to non-staging mount should be ErrNotSupported, got %v", err)
+	}
+}
