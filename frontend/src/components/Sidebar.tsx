@@ -156,7 +156,7 @@ export function Sidebar() {
             <button
               onClick={() => navigate('/files')}
               className={cn(
-                'w-full flex items-center px-2 py-1.5 rounded-lg text-sm transition-colors',
+                'w-full flex items-center px-2 py-2 rounded-lg text-sm transition-colors',
                 filesActive
                   ? 'bg-blue-50 text-blue-700 font-medium dark:bg-blue-900/40 dark:text-blue-300'
                   : 'text-slate-600 dark:text-slate-400 hover:bg-white dark:hover:bg-slate-800',
@@ -168,7 +168,7 @@ export function Sidebar() {
             {deviceManagement && (
               <button
                 onClick={() => setDeviceOpen(true)}
-                className="w-full flex items-center px-2 py-1.5 rounded-lg text-sm transition-colors text-slate-600 dark:text-slate-400 hover:bg-white dark:hover:bg-slate-800"
+                className="w-full flex items-center px-2 py-2 rounded-lg text-sm transition-colors text-slate-600 dark:text-slate-400 hover:bg-white dark:hover:bg-slate-800"
               >
                 <Usb className="w-4 h-4 mr-2.5 opacity-80" />
                 <span>设备管理</span>

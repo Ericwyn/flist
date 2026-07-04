@@ -33,7 +33,7 @@ function errMessage(e: unknown, map: Record<number, string>): string {
 }
 
 // 应用版本号（简单展示用，发版时手动同步）。
-const APP_VERSION = 'v0.1.5';
+const APP_VERSION = 'v0.2.0';
 
 type SettingsTab = 'account' | 'appearance' | 'sidebar';
 
