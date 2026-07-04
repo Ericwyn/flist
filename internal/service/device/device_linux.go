@@ -80,9 +80,22 @@ func (s *linuxService) List(ctx context.Context) ([]Device, error) {
 		}
 		return nil, fmt.Errorf("%w: lsblk: %v", ErrCommand, err)
 	}
-	devices, err := parseLsblk(out)
+	parsed, err := parseLsblk(out)
 	if err != nil {
 		return nil, fmt.Errorf("%w: parse lsblk: %v", ErrCommand, err)
+	}
+	// 本功能只管理移动设备（U 盘 / 移动硬盘）；本地磁盘 / 系统盘一律不纳入。
+	// 对已挂载的移动设备（含被系统自动挂载、或 flist 重启后仍挂着的）做惰性注册，
+	// 使「进入」在任何情况下都能路由到 /drive/<id>，避免 page_not_found。
+	devices := make([]Device, 0, len(parsed))
+	for i := range parsed {
+		if !parsed[i].Removable {
+			continue
+		}
+		if parsed[i].Mounted {
+			s.ensureRegistered(&parsed[i])
+		}
+		devices = append(devices, parsed[i])
 	}
 	return devices, nil
 }
