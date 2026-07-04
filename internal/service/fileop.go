@@ -201,13 +201,13 @@ func (s *FileOpService) Subscribe(taskID, userScope string) (<-chan FileOpEvent,
 	}
 	ch := make(chan FileOpEvent, 64)
 	t.mu.Lock()
-	t.subs[ch] = struct{}{}
 	snap := t.snapshot
 	finished := t.finished
 	results := t.results
-	t.mu.Unlock()
 	if finished {
-		// 已结束：发一条 finished 后关闭。results 在锁内拷贝进快照，避免锁外读竞态。
+		// 已结束时 subs 已被 finishTask 置 nil，不能再注册，否则写 nil map 崩溃。
+		t.mu.Unlock()
+		// 发一条 finished 后关闭。results 在锁内拷贝进快照，避免锁外读竞态。
 		go func() {
 			snap.Results = results
 			ev := FileOpEvent{Type: "finished", Snapshot: snap}
@@ -219,6 +219,8 @@ func (s *FileOpService) Subscribe(taskID, userScope string) (<-chan FileOpEvent,
 		}()
 		return ch, snap, func() {}
 	}
+	t.subs[ch] = struct{}{}
+	t.mu.Unlock()
 	return ch, snap, func() {
 		t.mu.Lock()
 		delete(t.subs, ch)
