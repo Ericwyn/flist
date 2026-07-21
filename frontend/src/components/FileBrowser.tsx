@@ -37,6 +37,39 @@ const formatTime = (iso: string) => {
   return d.toLocaleString();
 };
 
+// 超长名称在网格和列表视图下的最大显示字符数（含省略号和扩展名）。
+const GRID_NAME_MAX_DISPLAY_LENGTH = 24;
+const LIST_NAME_MAX_DISPLAY_LENGTH = 50;
+
+/**
+ * 对超长文件名做「中间省略」处理，优先保留扩展名。
+ * 例：`2222222222222222222222222.txt` → `222222222…2222222.txt`
+ */
+function truncateMiddleName(fileName: string, maxDisplayLength: number): string {
+  if (fileName.length <= maxDisplayLength) return fileName;
+
+  const lastDotIndex = fileName.lastIndexOf('.');
+  const hasExtension = lastDotIndex > 0 && lastDotIndex < fileName.length - 1;
+
+  const extension = hasExtension ? fileName.slice(lastDotIndex) : '';
+  const baseName = hasExtension ? fileName.slice(0, lastDotIndex) : fileName;
+
+  const ellipsis = '…';
+  const availableCharsForBase = maxDisplayLength - ellipsis.length - extension.length;
+
+  if (availableCharsForBase <= 0) {
+    return fileName.slice(0, maxDisplayLength - 1) + ellipsis;
+  }
+
+  const prefixLength = Math.ceil(availableCharsForBase * 0.6);
+  const suffixLength = availableCharsForBase - prefixLength;
+
+  if (suffixLength > 0) {
+    return baseName.slice(0, prefixLength) + ellipsis + baseName.slice(-suffixLength) + extension;
+  }
+  return baseName.slice(0, prefixLength) + ellipsis + extension;
+}
+
 const FILE_BROWSER_SCROLL_KEY = 'flist.fileBrowser.scrollPositions';
 
 function scrollStorageKey(path: string, viewMode: 'grid' | 'list'): string {
@@ -978,11 +1011,12 @@ function GridView({ entries, selected, cutNames, viewScale, onItemClick, onOpen,
             )}
           </div>
           <span
-            className={cn('text-center break-all line-clamp-2',
+            title={entry.name}
+            className={cn('text-center line-clamp-2',
               entry.unreachable ? 'text-slate-300 dark:text-slate-600 line-through' : 'text-slate-700 dark:text-slate-300')}
-            style={{ fontSize: `${12 * viewScale}px`, lineHeight: 1.25 }}
+            style={{ fontSize: `${12 * viewScale}px`, lineHeight: 1.25, wordBreak: 'break-all' }}
           >
-            {entry.name}
+            {truncateMiddleName(entry.name, GRID_NAME_MAX_DISPLAY_LENGTH)}
           </span>
         </button>
       ))}
@@ -994,7 +1028,7 @@ function ListView({ entries, selected, cutNames, viewScale, onItemClick, onOpen,
   const listScale = viewScale * 1.1;
   const iconSize = Math.round(16 * listScale);
   return (
-    <table className="w-full" style={{ fontSize: `${14 * listScale}px` }}>
+    <table className="w-full table-fixed" style={{ fontSize: `${14 * listScale}px` }}>
       <thead>
         <tr className="text-slate-400 border-b border-slate-100 dark:border-slate-800" style={{ fontSize: `${11 * listScale}px` }}>
           <th className="text-left font-medium py-2 px-2">名称</th>
@@ -1021,9 +1055,11 @@ function ListView({ entries, selected, cutNames, viewScale, onItemClick, onOpen,
             <td className="px-2" style={{ paddingTop: `${6 * listScale}px`, paddingBottom: `${6 * listScale}px` }}>
               <div className="flex items-center min-w-0" style={{ gap: `${8 * listScale}px` }}>
                 <FileIcon kind={kindOf(entry)} className="shrink-0" style={{ width: iconSize, height: iconSize }} />
-                <span className={cn('truncate',
-                  entry.unreachable ? 'text-slate-300 dark:text-slate-600 line-through' : 'text-slate-700 dark:text-slate-300')}>
-                  {entry.name}
+                <span
+                  title={entry.name}
+                  className={cn('truncate',
+                    entry.unreachable ? 'text-slate-300 dark:text-slate-600 line-through' : 'text-slate-700 dark:text-slate-300')}>
+                  {truncateMiddleName(entry.name, LIST_NAME_MAX_DISPLAY_LENGTH)}
                 </span>
                 {entry.isSymlink && <Link2 className="w-3 h-3 text-slate-400 shrink-0" />}
               </div>
