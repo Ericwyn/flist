@@ -19,7 +19,7 @@ export function Modal({ isOpen, onClose, title, children, footer, maxWidth = 'sm
   // 把当前 onClose 存入 ref，使注册到弹窗栈的 closer 始终调用最新的处理函数。
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
-  const idRef = useRef<number>();
+  const idRef = useRef<number | undefined>(undefined);
   if (idRef.current === undefined) idRef.current = nextModalId();
 
   // 打开时注册到弹窗栈（供物理前进/后退拦截），关闭/卸载时移除。

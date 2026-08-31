@@ -1,17 +1,43 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useFsStore } from '../fsStore';
 import { api, getToken } from '../lib/api';
 import { kindOf } from '../lib/path';
+import {
+  buildDirectoryMediaItems,
+  buildSearchMediaItems,
+  getMediaNavigation,
+  MediaPreviewItem,
+} from '../lib/mediaNavigation';
 import { PreviewResult } from '../types';
 import { Modal } from './Modal';
 import { ConflictDialog } from './ConflictDialog';
 import { SaveAsDialog } from './SaveAsDialog';
 import { useFileEditor } from '../lib/useFileEditor';
 import { formatBytes } from '../lib/utils';
-import { Download, File, Loader2, Music, ExternalLink, Save, Undo2, FileWarning } from 'lucide-react';
+import {
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  File,
+  Loader2,
+  Music,
+  ExternalLink,
+  Save,
+  Undo2,
+  FileWarning,
+} from 'lucide-react';
 
 export function PreviewModal() {
-  const { previewEntry, previewPath, closePreview } = useFsStore();
+  const {
+    previewEntry,
+    previewPath,
+    closePreview,
+    openPreview,
+    currentPath,
+    entries,
+    searchOpen,
+    searchResults,
+  } = useFsStore();
 
   const kind = previewEntry ? kindOf(previewEntry) : 'unknown';
   const isTextKind = kind === 'text' || kind === 'unknown';
@@ -54,6 +80,53 @@ export function PreviewModal() {
     },
     [ed],
   );
+
+  // 正常目录的 entries 已按用户当前选择的 sort/order 排序；搜索页则使用当前展示顺序。
+  // 队列只做媒体过滤，切换图片、视频和音频时不会重新排序。
+  const mediaItems = useMemo(
+    () => searchOpen
+      ? buildSearchMediaItems(searchResults)
+      : buildDirectoryMediaItems(entries, currentPath),
+    [searchOpen, searchResults, entries, currentPath],
+  );
+  const mediaNavigation = useMemo(
+    () => getMediaNavigation(mediaItems, previewPath ?? ''),
+    [mediaItems, previewPath],
+  );
+  const switchMedia = useCallback(
+    (item: MediaPreviewItem | null) => {
+      if (item) openPreview(item.entry, item.path);
+    },
+    [openPreview],
+  );
+  const showMediaNavigation = mediaNavigation.currentIndex >= 0 && mediaNavigation.total > 1;
+
+  // 在焦点不属于会消费方向键的控件时支持切换；避免抢占音视频原生的快进、音量等操作。
+  useEffect(() => {
+    if (!showMediaNavigation) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+      const target = event.target;
+      if (
+        target instanceof HTMLElement
+        && target.closest('input, textarea, select, audio, video, [contenteditable="true"], .cm-editor')
+      ) return;
+
+      const targetItem = event.key === 'ArrowLeft'
+        ? mediaNavigation.previous
+        : event.key === 'ArrowRight'
+          ? mediaNavigation.next
+          : null;
+      if (!targetItem) return;
+
+      event.preventDefault();
+      switchMedia(targetItem);
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [mediaNavigation.next, mediaNavigation.previous, showMediaNavigation, switchMedia]);
 
   if (!previewEntry || !previewPath) return null;
 
@@ -132,17 +205,35 @@ export function PreviewModal() {
       contentClassName="bg-slate-50 dark:bg-slate-950/50 p-0"
       footer={footer}
     >
-      <div className="min-h-[40vh] max-h-[72vh]">
+      <div className="relative min-h-[40vh] max-h-[72vh]">
+        {showMediaNavigation && (
+          <>
+            <MediaNavigationButton
+              direction="previous"
+              item={mediaNavigation.previous}
+              onSelect={switchMedia}
+            />
+            <MediaNavigationButton
+              direction="next"
+              item={mediaNavigation.next}
+              onSelect={switchMedia}
+            />
+            <span className="sr-only" aria-live="polite">
+              第 {mediaNavigation.currentIndex + 1} 个媒体，共 {mediaNavigation.total} 个
+            </span>
+          </>
+        )}
+
         {kind === 'image' && (
           <div className="flex items-center justify-center min-h-[40vh] max-h-[72vh]">
-            <img src={inlineUrl} alt={previewEntry.name} className="max-w-full max-h-[70vh] object-contain" />
+            <img key={previewPath} src={inlineUrl} alt={previewEntry.name} className="max-w-full max-h-[70vh] object-contain" />
           </div>
         )}
 
         {kind === 'video' && (
           <div className="flex items-center justify-center min-h-[40vh] max-h-[72vh]">
             {/* 同源 HttpOnly Cookie 鉴权，支持 Range 拖拽。 */}
-            <video src={inlineUrl} controls autoPlay className="max-w-full max-h-[70vh] outline-none" />
+            <video key={previewPath} src={inlineUrl} controls autoPlay className="max-w-full max-h-[70vh] outline-none" />
           </div>
         )}
 
@@ -155,7 +246,7 @@ export function PreviewModal() {
                 </div>
                 <h4 className="font-medium text-slate-900 dark:text-slate-100">{previewEntry.name}</h4>
               </div>
-              <audio src={inlineUrl} controls autoPlay className="w-full outline-none" />
+              <audio key={previewPath} src={inlineUrl} controls autoPlay className="w-full outline-none" />
             </div>
           </div>
         )}
@@ -276,6 +367,36 @@ export function PreviewModal() {
         </div>
       )}
     </Modal>
+  );
+}
+
+function MediaNavigationButton({
+  direction,
+  item,
+  onSelect,
+}: {
+  direction: 'previous' | 'next';
+  item: MediaPreviewItem | null;
+  onSelect: (item: MediaPreviewItem | null) => void;
+}) {
+  const isPrevious = direction === 'previous';
+  const action = isPrevious ? '上一个媒体' : '下一个媒体';
+  const edgeLabel = isPrevious ? '已经是第一个媒体' : '已经是最后一个媒体';
+  const label = item ? `${action}：${item.entry.name}` : edgeLabel;
+
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(item)}
+      disabled={!item}
+      aria-label={label}
+      title={`${label}${item ? (isPrevious ? '（←）' : '（→）') : ''}`}
+      className={`absolute top-1/2 z-20 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-slate-600 shadow-md backdrop-blur-sm transition-colors hover:bg-white hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-35 dark:border-slate-700 dark:bg-slate-900/90 dark:text-slate-300 dark:hover:bg-slate-900 dark:hover:text-white dark:focus-visible:ring-offset-slate-950 ${isPrevious ? 'left-3' : 'right-3'}`}
+    >
+      {isPrevious
+        ? <ChevronLeft className="h-5 w-5" aria-hidden="true" />
+        : <ChevronRight className="h-5 w-5" aria-hidden="true" />}
+    </button>
   );
 }
 

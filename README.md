@@ -111,6 +111,7 @@ make run
 | `Ctrl/Cmd + X` | 剪切选中项 |
 | `Ctrl/Cmd + V` | 粘贴 |
 | `Ctrl/Cmd + S` | 保存（编辑器内） |
+| `←` / `→` | 切换上一个 / 下一个媒体（预览内） |
 | `F2` | 重命名（单选时） |
 | `Delete` / `Backspace` | 删除选中项 |
 | `Escape` | 清空选择 / 关闭弹窗 |
