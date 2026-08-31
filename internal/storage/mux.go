@@ -41,6 +41,7 @@ var _ Usager = (*Mux)(nil)
 var _ ContentEditor = (*Mux)(nil)
 var _ ProgressCopier = (*Mux)(nil)
 var _ Uploader = (*Mux)(nil)
+var _ StreamWriter = (*Mux)(nil)
 
 // NewMux 构造组合驱动。mounts 顺序决定虚拟根列表的展示顺序（可为 nil，构造空命名空间，
 // 后续用 AddMount 动态注册，如设备 Mux）。
@@ -206,6 +207,23 @@ func (m *Mux) Open(ctx context.Context, p string) (File, *model.FileInfo, error)
 	}
 	m.rewriteTarget(name, info)
 	return f, info, nil
+}
+
+// OpenWrite 把统一命名空间下的目标路径路由到对应挂载点的 StreamWriter。
+// 虚拟根、挂载点根和不支持流式写入的后端均显式拒绝。
+func (m *Mux) OpenWrite(ctx context.Context, p string) (io.WriteCloser, error) {
+	_, b, rel, err := m.route(p)
+	if err != nil {
+		return nil, err
+	}
+	if b == nil || rel == "/" {
+		return nil, ErrBadOp
+	}
+	sw, ok := b.(StreamWriter)
+	if !ok {
+		return nil, ErrNotSupported
+	}
+	return sw.OpenWrite(ctx, rel)
 }
 
 func (m *Mux) Mkdir(ctx context.Context, p string) error {
@@ -455,7 +473,7 @@ func (m *Mux) WriteText(ctx context.Context, p string, content []byte, expected 
 }
 
 // stagingBackend 返回承载分片上传暂存的挂载点后端：取第一个实现 Uploader 的挂载点
-//（挂载顺序即优先级，本地 files 后端排在最前，持有 DATA_DIR 下的全局暂存目录）。
+// （挂载顺序即优先级，本地 files 后端排在最前，持有 DATA_DIR 下的全局暂存目录）。
 //
 // 分片暂存目录与落点 root 解耦，且 stage/abort/sweep 这类操作只有 uploadID、没有落点
 // 路径信息，无法按路由分发，故统一委托给这一暂存后端。MergeUpload 有 dst，按路由分发，

@@ -450,7 +450,7 @@ export const api = {
       };
     },
 
-    // op: 异步文件操作任务（copy/move/delete 后台化 + SSE 进度）。
+    // op: 异步文件操作任务（copy/move/delete/extract 后台化 + SSE 进度）。
     // 发起任务立即返回 task_id（HTTP 202）；进度通过 opProgress 订阅 SSE。
     op: {
       async copy(src: string[], dst: string, autoRename = false): Promise<FileOpStartResult> {
@@ -471,6 +471,13 @@ export const api = {
         const raw = await request<RawFileOpStart>('/api/fs/op/delete', {
           method: 'POST',
           body: { paths },
+        });
+        return mapFileOpStart(raw);
+      },
+      async extract(path: string): Promise<FileOpStartResult> {
+        const raw = await request<RawFileOpStart>('/api/fs/op/extract', {
+          method: 'POST',
+          body: { path },
         });
         return mapFileOpStart(raw);
       },

@@ -19,10 +19,11 @@ interface FileOpState {
   tasks: FileOpTask[];
   panelOpen: boolean;
 
-  // startCopy/Move/Delete 发起异步任务，立即返回（不阻塞）；进度通过 SSE 推送。
+  // startCopy/Move/Delete/Extract 发起异步任务，立即返回（不阻塞）；进度通过 SSE 推送。
   startCopy: (srcs: string[], dst: string, autoRename?: boolean) => Promise<void>;
   startMove: (srcs: string[], dst: string, autoRename?: boolean) => Promise<void>;
   startDelete: (paths: string[]) => Promise<void>;
+  startExtract: (path: string) => Promise<void>;
   cancelTask: (id: string) => void;
   removeTask: (id: string) => void;
   clearFinished: () => void;
@@ -38,6 +39,8 @@ export const useFileOpStore = create<FileOpState>((set, get) => ({
   startMove: (srcs, dst, autoRename = false) =>
     startOp(set, get, 'move', srcs, dst, autoRename),
   startDelete: (paths) => startOp(set, get, 'delete', paths, '', false),
+  startExtract: (archivePath) =>
+    startOp(set, get, 'extract', [archivePath], parentPath(archivePath), false),
 
   cancelTask: (id) => {
     void api.fs.op.cancel(id).catch(() => {});
@@ -81,7 +84,8 @@ async function startOp(
   try {
     if (op === 'copy') res = await api.fs.op.copy(srcs, dst, autoRename);
     else if (op === 'move') res = await api.fs.op.move(srcs, dst, autoRename);
-    else res = await api.fs.op.delete(srcs);
+    else if (op === 'delete') res = await api.fs.op.delete(srcs);
+    else res = await api.fs.op.extract(srcs[0]);
   } catch (e) {
     handleAuth(e);
     // 发起失败：仍入面板展示一条 error 任务，便于用户看到原因。
@@ -257,12 +261,15 @@ function itemStatus(ok?: boolean, error?: string): FileOpItemStatus {
 // maybeRefresh 任务完成后按相关性刷新当前目录：
 //   copy   → 当前目录为目标 dst 时刷新
 //   move   → 当前目录为 dst 或任一 src 的父目录、或当前目录本身是某 src 时刷新
-//   delete → 当前目录为任一 src 的父目录、或当前目录本身是某 src 时刷新
+//   delete  → 当前目录为任一 src 的父目录、或当前目录本身是某 src 时刷新
+//   extract → 当前目录为压缩包父目录时刷新
 function maybeRefresh(t: FileOpTask) {
   const fs = useFsStore.getState();
   const cur = fs.currentPath;
   const rel =
-    t.op === 'delete'
+    t.op === 'extract'
+      ? t.srcs.some((p) => parentPath(p) === cur)
+      : t.op === 'delete'
       ? t.srcs.some((p) => p === cur || parentPath(p) === cur)
       : t.op === 'move'
         ? cur === t.dst || t.srcs.some((p) => p === cur || parentPath(p) === cur)
@@ -386,6 +393,8 @@ function opErrMessage(e: unknown): string {
         return '路径越界';
       case 2001:
         return '路径不存在';
+      case 4000:
+        return e.message === 'unsupported_archive' ? '不支持这种压缩格式' : e.message;
       default:
         return e.message;
     }

@@ -3,6 +3,7 @@ import { useFsStore } from '../fsStore';
 import { useStore } from '../store';
 import { useUploadStore } from '../uploadStore';
 import { useDownloadStore } from '../downloadStore';
+import { useFileOpStore } from '../fileOpStore';
 import { FileIcon } from './FileIcon';
 import { ContextMenu, MenuItem } from './ContextMenu';
 import { PropertiesModal } from './PropertiesModal';
@@ -10,7 +11,7 @@ import { InputModal } from './InputModal';
 import { ConfirmModal } from './ConfirmModal';
 import { SearchBar } from './SearchBar';
 import { cn } from '../lib/utils';
-import { kindOf, joinPath, breadcrumbs, parentPath } from '../lib/path';
+import { kindOf, joinPath, breadcrumbs, parentPath, isExtractableName } from '../lib/path';
 import { closeTopModal, subscribeModal, openModalCount } from '../lib/modalRegistry';
 import { api } from '../lib/api';
 import { FileEntry, SearchHit } from '../types';
@@ -19,7 +20,7 @@ import {
   Eye, EyeOff, ArrowDownAZ, ArrowUpAZ, LayoutGrid, List as ListIcon,
   Link2, AlertTriangle, Loader2, FolderOpen, ExternalLink,
   FolderPlus, FilePlus, Pencil, Trash2, Copy, Scissors, ClipboardPaste, Star, Upload,
-  ZoomIn, ZoomOut, MoreHorizontal,
+  ZoomIn, ZoomOut, MoreHorizontal, ArchiveRestore,
 } from 'lucide-react';
 import { useBookmarkStore } from '../bookmarkStore';
 
@@ -146,6 +147,7 @@ export function FileBrowser() {
   const addBookmark = useBookmarkStore((s) => s.add);
   const enqueueUpload = useUploadStore((s) => s.enqueue);
   const startDownload = useDownloadStore((s) => s.start);
+  const startExtract = useFileOpStore((s) => s.startExtract);
 
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [crumbMenu, setCrumbMenu] = useState<{ x: number; y: number } | null>(null);
@@ -614,6 +616,15 @@ export function FileBrowser() {
     }
     fileItems.push(
       { label: '下载', icon: <Download className="w-4 h-4" />, onClick: () => doDownload(entry) },
+    );
+    if (isExtractableName(entry.name)) {
+      fileItems.push({
+        label: '解压',
+        icon: <ArchiveRestore className="w-4 h-4" />,
+        onClick: () => void startExtract(joinPath(currentPath, entry.name)),
+      });
+    }
+    fileItems.push(
       ...clip,
       { label: '重命名', icon: <Pencil className="w-4 h-4" />, onClick: () => setDialog({ kind: 'rename', entry }) },
       { label: '删除', icon: <Trash2 className="w-4 h-4" />, danger: true, onClick: () => setDialog({ kind: 'delete', entries: [entry] }) },

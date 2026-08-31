@@ -7,7 +7,7 @@ import { Modal } from './Modal';
 import {
   X, ChevronDown, ChevronUp, CheckCircle2, AlertCircle, Loader2,
   ArrowLeftRight, Ban, Pencil, Download, Copy, FolderInput, Trash2,
-  MinusCircle, Clock,
+  MinusCircle, Clock, ArchiveRestore,
 } from 'lucide-react';
 
 const formatBytes = (bytes: number, decimals = 1) => {
@@ -349,7 +349,7 @@ function UploadRowActions({
   return null;
 }
 
-// FileOpRow 渲染一个异步文件操作任务（copy/move/delete）。
+// FileOpRow 渲染一个异步文件操作任务（copy/move/delete/extract）。
 // 进度：项内字节进度（curCopied/curSize）+ 总进度（doneItems/totalItems）。
 // 点击主体区域打开详情 Modal（逐项状态）。
 function FileOpRow({ task, onOpenDetail }: { task: FileOpTask; onOpenDetail: () => void }) {
@@ -392,13 +392,18 @@ function FileOpRow({ task, onOpenDetail }: { task: FileOpTask; onOpenDetail: () 
         )}
       </div>
 
-      {/* 进度条：运行中且当前项有大小时显示项内字节进度；否则显示总进度。 */}
-      {task.status === 'running' && (
+      {/* 进度条：有可计算总量时显示确定进度，否则沿用现有不确定动画。 */}
+      {task.status === 'running' && task.curSize > 0 && (
         <div className="mt-1.5 h-1 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
           <div
             className="h-full bg-blue-500 transition-all duration-200"
-            style={{ width: `${task.curSize > 0 ? curPct : totPct}%` }}
+            style={{ width: `${curPct}%` }}
           />
+        </div>
+      )}
+      {task.status === 'running' && task.curSize <= 0 && (
+        <div className="mt-1.5 h-1 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+          <div className="h-full w-1/3 bg-blue-500 animate-indeterminate rounded-full" />
         </div>
       )}
       {task.status === 'queued' && (
@@ -408,7 +413,7 @@ function FileOpRow({ task, onOpenDetail }: { task: FileOpTask; onOpenDetail: () 
       )}
 
       {task.status === 'error' && task.error && (
-        <div className="mt-1 text-[10px] text-rose-500">{task.error}</div>
+        <div className="mt-1 text-[10px] text-rose-500">{itemErrorLabel(task.error)}</div>
       )}
       {task.status === 'done' && task.results && task.results.some((r) => !r.ok) && (
         <div className="mt-1 text-[10px] text-amber-500">
@@ -420,8 +425,9 @@ function FileOpRow({ task, onOpenDetail }: { task: FileOpTask; onOpenDetail: () 
 }
 
 function fileOpTitle(task: FileOpTask): string {
-  const label = task.op === 'copy' ? '复制' : task.op === 'move' ? '移动' : '删除';
+  const label = fileOpLabel(task.op);
   if (task.curName) return `${label} · ${task.curName}`;
+  if (task.op === 'extract' && task.items?.[0]?.name) return `${label} · ${task.items[0].name}`;
   const cnt = task.totalItems;
   return `${label} · ${cnt} 项`;
 }
@@ -431,12 +437,17 @@ function fileOpStatusLabel(task: FileOpTask, totPct: number, curPct: number): st
     case 'queued':
       return `排队中 · ${task.doneItems}/${task.totalItems} 项`;
     case 'running':
+      if (task.op === 'extract') {
+        return task.curSize > 0
+          ? `${curPct}% · 解压中 · ${formatBytes(task.speed)}/s`
+          : '正在读取压缩包…';
+      }
       if (task.curSize > 0) {
         return `${curPct}% · ${formatBytes(task.curCopied)} / ${formatBytes(task.curSize)} · 总 ${totPct}% (${task.doneItems}/${task.totalItems}) · ${formatBytes(task.speed)}/s`;
       }
       return `${task.doneItems}/${task.totalItems} 项 · ${totPct}%`;
     case 'done':
-      return `完成 · ${task.totalItems} 项`;
+      return task.op === 'extract' ? '解压完成' : `完成 · ${task.totalItems} 项`;
     case 'canceled': {
       // 取消时可能部分项已完成——展示明细让用户知道哪些成功。
       const ok = task.items?.filter((i) => i && i.status === 'done').length ?? 0;
@@ -459,7 +470,15 @@ function FileOpStatusIcon({ task }: { task: FileOpTask }) {
   // running：按操作类型区分图标（彩色），与上传的旋转 Loader 区分。
   if (task.op === 'delete') return <Trash2 className="w-4 h-4 text-amber-500 shrink-0" />;
   if (task.op === 'move') return <FolderInput className="w-4 h-4 text-violet-500 shrink-0" />;
+  if (task.op === 'extract') return <ArchiveRestore className="w-4 h-4 text-blue-500 shrink-0" />;
   return <Copy className="w-4 h-4 text-blue-500 shrink-0" />;
+}
+
+function fileOpLabel(op: string): string {
+  if (op === 'copy') return '复制';
+  if (op === 'move') return '移动';
+  if (op === 'extract') return '解压';
+  return '删除';
 }
 
 // FileOpDetailModal 展示任务的逐项明细：每项的名称、状态（成功/失败/取消/跳过/进行中）、错误。
@@ -468,7 +487,7 @@ function FileOpDetailModal({ taskId, onClose }: { taskId: string | null; onClose
   const tasks = useFileOpStore((s) => s.tasks);
   const task = tasks.find((t) => t.id === taskId) ?? null;
 
-  const opLabel = (op: string) => (op === 'copy' ? '复制' : op === 'move' ? '移动' : '删除');
+  const opLabel = fileOpLabel;
   const statusLabel = (s: string) =>
     s === 'queued' ? '排队中' : s === 'running' ? '进行中' : s === 'done' ? '完成' : s === 'canceled' ? '已取消' : s === 'error' ? '失败' : s;
 
@@ -535,7 +554,7 @@ function FileOpDetailModal({ taskId, onClose }: { taskId: string | null; onClose
           {/* 整体错误（如目标非法） */}
           {task.error && (
             <div className="text-xs text-rose-500 bg-rose-50 dark:bg-rose-900/20 rounded px-2 py-1.5">
-              {task.error}
+              {itemErrorLabel(task.error)}
             </div>
           )}
         </div>
@@ -579,6 +598,20 @@ function itemErrorLabel(err: string): string {
       return '磁盘空间不足';
     case 'permission_denied':
       return '无权限';
+    case 'unsupported_archive':
+      return '不支持的压缩格式';
+    case 'archive_encrypted':
+      return '压缩包需要密码';
+    case 'archive_multivolume':
+      return '暂不支持分卷压缩包';
+    case 'archive_unsafe_path':
+      return '压缩包包含不安全路径';
+    case 'archive_too_many_entries':
+      return '压缩包内文件过多';
+    case 'archive_corrupt':
+      return '压缩包已损坏或格式不符';
+    case 'not_supported':
+      return '当前存储不支持解压';
     case 'bad_request':
     case 'bad_op':
       return '操作非法';

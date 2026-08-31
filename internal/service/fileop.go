@@ -1,6 +1,6 @@
 // Package service 的异步文件操作部分。
 //
-// FileOpService 把 copy/move/delete 改造成后台任务：请求立即返回 task_id，由单一
+// FileOpService 把 copy/move/delete/extract 改造成后台任务：请求立即返回 task_id，由单一
 // worker 串行执行（NAS 机械盘场景避免磁头抖动），通过 SSE 推送项内字节进度。
 // 业务规则（落点判定 / 自动避让 / 空间预检）复用 FileService 的导出方法，保证与
 // 同步路径语义一致。任务状态存内存、随进程生命周期；已完成任务保留 10 分钟供
@@ -41,28 +41,28 @@ const (
 )
 
 // fileOpProgressInterval 进度事件最小推送间隔，避免高频回调打满 SSE。
-//（var 而非 const，便于测试调小以验证慢复制路径）。
+// （var 而非 const，便于测试调小以验证慢复制路径）。
 var fileOpProgressInterval = 200 * time.Millisecond
 
 // FileOpEvent 是推送给 SSE 订阅者的事件。
 type FileOpEvent struct {
-	Type     string          `json:"type"` // snapshot | item_start | item_progress | item_done | finished
+	Type     string               `json:"type"` // snapshot | item_start | item_progress | item_done | finished
 	Snapshot model.FileOpSnapshot `json:"snapshot"`
-	Index    int             `json:"index,omitempty"`
-	Name     string          `json:"name,omitempty"`
-	Size     int64           `json:"size,omitempty"`
-	Copied   int64           `json:"copied,omitempty"`
-	OK       bool            `json:"ok,omitempty"`
-	Error    string          `json:"error,omitempty"`
+	Index    int                  `json:"index,omitempty"`
+	Name     string               `json:"name,omitempty"`
+	Size     int64                `json:"size,omitempty"`
+	Copied   int64                `json:"copied,omitempty"`
+	OK       bool                 `json:"ok,omitempty"`
+	Error    string               `json:"error,omitempty"`
 }
 
 // fileOpTask 是一次异步文件操作的内存状态。
 type fileOpTask struct {
-	id        string
-	op        string
-	userScope string
-	srcs      []string
-	dst       string
+	id         string
+	op         string
+	userScope  string
+	srcs       []string
+	dst        string
 	autoRename bool
 	startedAt  time.Time
 	finishedAt time.Time // 终态写入时间，Sweep 据此判定 TTL（不可用 startedAt，否则长任务一完成即被清）
@@ -83,13 +83,13 @@ type fileOpTask struct {
 	subs map[chan FileOpEvent]struct{}
 }
 
-// FileOpService 提供异步 copy/move/delete 任务编排，单一 worker 串行执行。
+// FileOpService 提供异步 copy/move/delete/extract 任务编排，单一 worker 串行执行。
 type FileOpService struct {
 	files  *FileService
 	logger *slog.Logger
 
-	jobs chan *fileOpTask
-	mu   sync.Mutex
+	jobs  chan *fileOpTask
+	mu    sync.Mutex
 	tasks map[string]*fileOpTask
 }
 
@@ -109,12 +109,18 @@ func NewFileOpService(files *FileService, logger *slog.Logger) *FileOpService {
 }
 
 // Start 创建并入队一个任务，返回任务句柄。队列满时返回 ErrFileOpBusy。
-// op ∈ {copy,move,delete}。totalBytes 为 best-effort 估算（treeSize），失败置 0。
+// op ∈ {copy,move,delete,extract}。totalBytes 为 best-effort 估算；extract 取源包大小。
 func (s *FileOpService) Start(ctx context.Context, op, userScope string, srcs []string, dst string, autoRename bool) (*model.FileOpStartResult, error) {
 	if len(srcs) == 0 {
 		return nil, storage.ErrBadOp
 	}
-	if op != model.FileOpDelete && dst == "" {
+	if op != model.FileOpCopy && op != model.FileOpMove && op != model.FileOpDelete && op != model.FileOpExtract {
+		return nil, storage.ErrBadOp
+	}
+	if (op == model.FileOpCopy || op == model.FileOpMove) && dst == "" {
+		return nil, storage.ErrBadOp
+	}
+	if op == model.FileOpExtract && len(srcs) != 1 {
 		return nil, storage.ErrBadOp
 	}
 
@@ -122,13 +128,22 @@ func (s *FileOpService) Start(ctx context.Context, op, userScope string, srcs []
 	// 用独立短 deadline 与请求 ctx 解耦，避免大目录递归 stat 拖慢 202 响应、
 	// 或客户端提前断开导致估算中断。超时则 totalBytes 置 0（前端显示未知）。
 	var totalBytes int64
-	estCtx, estCancel := context.WithTimeout(context.Background(), fileOpEstimateTimeout)
-	for _, src := range srcs {
-		if n, err := s.files.TreeSize(estCtx, src); err == nil {
-			totalBytes += int64(n)
+	if op == model.FileOpExtract {
+		info, err := s.validateExtractSource(ctx, srcs[0])
+		if err != nil {
+			return nil, err
 		}
+		totalBytes = info.Size
+		dst = path.Dir(util.CleanAPIPath(srcs[0]))
+	} else {
+		estCtx, estCancel := context.WithTimeout(context.Background(), fileOpEstimateTimeout)
+		for _, src := range srcs {
+			if n, err := s.files.TreeSize(estCtx, src); err == nil {
+				totalBytes += int64(n)
+			}
+		}
+		estCancel()
 	}
-	estCancel()
 
 	id, err := util.GenerateToken()
 	if err != nil {
@@ -136,17 +151,17 @@ func (s *FileOpService) Start(ctx context.Context, op, userScope string, srcs []
 	}
 	taskCtx, cancel := context.WithCancel(context.Background())
 	t := &fileOpTask{
-		id:        id,
-		op:        op,
-		userScope: userScope,
-		srcs:      srcs,
-		dst:       dst,
+		id:         id,
+		op:         op,
+		userScope:  userScope,
+		srcs:       srcs,
+		dst:        dst,
 		autoRename: autoRename,
-		startedAt: time.Now(),
-		ctx:       taskCtx,
-		cancel:    cancel,
-		subs:      make(map[chan FileOpEvent]struct{}),
-		results:   make([]model.OpResult, 0, len(srcs)),
+		startedAt:  time.Now(),
+		ctx:        taskCtx,
+		cancel:     cancel,
+		subs:       make(map[chan FileOpEvent]struct{}),
+		results:    make([]model.OpResult, 0, len(srcs)),
 	}
 	t.snapshot = model.FileOpSnapshot{
 		Op:         op,
@@ -270,6 +285,8 @@ func (s *FileOpService) runTask(t *fileOpTask) {
 		s.execTransfer(t, false)
 	case model.FileOpDelete:
 		s.execDelete(t)
+	case model.FileOpExtract:
+		s.execExtract(t)
 	default:
 		s.finishTask(t, model.FileOpFailed, []model.OpResult{{Src: "", OK: false, Error: "bad_request"}})
 	}
@@ -538,9 +555,14 @@ func (s *FileOpService) finishTask(t *fileOpTask, status string, results []model
 func (s *FileOpService) emit(t *fileOpTask, ev FileOpEvent) {
 	t.mu.Lock()
 	ev.Snapshot = t.snapshot
-	subs := t.subs
+	// 订阅可能与事件推送并发发生；锁内复制 channel 列表，避免解锁后遍历 map
+	// 时 Subscribe/取消订阅同时写 map 触发数据竞争。
+	subs := make([]chan FileOpEvent, 0, len(t.subs))
+	for ch := range t.subs {
+		subs = append(subs, ch)
+	}
 	t.mu.Unlock()
-	for ch := range subs {
+	for _, ch := range subs {
 		select {
 		case ch <- ev:
 		default:

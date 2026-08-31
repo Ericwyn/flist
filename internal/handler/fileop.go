@@ -15,7 +15,7 @@ import (
 	"flist/internal/storage"
 )
 
-// FileOpHandler 处理异步文件操作任务（copy/move/delete）的发起、进度订阅与取消。
+// FileOpHandler 处理异步文件操作任务（copy/move/delete/extract）的发起、进度订阅与取消。
 type FileOpHandler struct {
 	ops    *service.FileOpService
 	logger *slog.Logger
@@ -54,6 +54,8 @@ func failFileOpErr(w http.ResponseWriter, err error) {
 		Fail(w, http.StatusNotFound, CodeFileOpNotFound, "fileop_not_found")
 	case errors.Is(err, service.ErrFileOpBusy):
 		Fail(w, http.StatusServiceUnavailable, CodeFileOpBusy, "fileop_busy")
+	case errors.Is(err, service.ErrUnsupportedArchive):
+		Fail(w, http.StatusBadRequest, CodeBadRequest, "unsupported_archive")
 	case errors.Is(err, storage.ErrBadOp):
 		Fail(w, http.StatusBadRequest, CodeBadRequest, "bad_request")
 	default:
@@ -99,6 +101,25 @@ func (h *FileOpHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := h.ops.Start(r.Context(), model.FileOpDelete, opScope(r), req.Paths, "", false)
+	if err != nil {
+		failFileOpErr(w, err)
+		return
+	}
+	WriteJSON(w, http.StatusAccepted, Envelope{Code: 0, Message: "accepted", Data: res})
+}
+
+type opExtractRequest struct {
+	Path string `json:"path"`
+}
+
+// Extract 发起单个压缩包的异步解压任务。格式由服务端按文件名判断。
+func (h *FileOpHandler) Extract(w http.ResponseWriter, r *http.Request) {
+	var req opExtractRequest
+	if err := decodeJSON(w, r, &req); err != nil || strings.TrimSpace(req.Path) == "" {
+		failBadRequest(w, "path required")
+		return
+	}
+	res, err := h.ops.Start(r.Context(), model.FileOpExtract, opScope(r), []string{req.Path}, "", false)
 	if err != nil {
 		failFileOpErr(w, err)
 		return

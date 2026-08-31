@@ -50,6 +50,12 @@ export function baseName(p: string): string {
   return p.replace(/\/$/, '').slice(p.replace(/\/$/, '').lastIndexOf('/') + 1);
 }
 
+// isExtractableName 按文件名判断当前在线解压支持的格式（大小写不敏感）。
+export function isExtractableName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return lower.endsWith('.tar.gz') || lower.endsWith('.zip') || lower.endsWith('.rar');
+}
+
 // breadcrumbs 将虚拟路径切分为面包屑片段。首段为挂载点前缀，映射为友好名称：
 // /files → 我的文件，/drive → 设备。其余段用原始名。
 export function breadcrumbs(p: string): { name: string; path: string }[] {

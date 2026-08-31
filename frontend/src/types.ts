@@ -213,7 +213,7 @@ export interface UploadTask {
 export type FileOpStatus = 'queued' | 'running' | 'done' | 'canceled' | 'error';
 
 // 异步文件操作类型。
-export type FileOpKind = 'copy' | 'move' | 'delete';
+export type FileOpKind = 'copy' | 'move' | 'delete' | 'extract';
 
 // 后端 SSE 推送的任务快照（对应 model.FileOpSnapshot）。
 export interface FileOpSnapshot {

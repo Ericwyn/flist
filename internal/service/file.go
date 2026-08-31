@@ -63,7 +63,7 @@ type FileService struct {
 // NewFileService 构造文件服务。backend 为存储驱动（local / Mux / 远程驱动）。
 // locker 用于文本保存的路径级写串行化（建议与 UploadService 共享同一实例，
 // 使「文本保存」与「上传合并」对同一目标路径互斥）。maxEdit 为可编辑文件大小上限
-//（字节，<=0 表示不限）。locker 为 nil 时自动创建一个独立实例（主要便于测试）。
+// （字节，<=0 表示不限）。locker 为 nil 时自动创建一个独立实例（主要便于测试）。
 func NewFileService(backend storage.Backend, locker *util.PathLocker, maxEdit int64) *FileService {
 	if locker == nil {
 		locker = util.NewPathLocker()
@@ -636,6 +636,18 @@ func opFail(src string, err error) model.OpResult {
 // errCodeName 将服务 / 驱动层错误映射为对外的错误码名（与 handler 错误码表对应）。
 func errCodeName(err error) string {
 	switch {
+	case errors.Is(err, ErrUnsupportedArchive):
+		return "unsupported_archive"
+	case errors.Is(err, ErrArchiveEncrypted):
+		return "archive_encrypted"
+	case errors.Is(err, ErrArchiveMultiVolume):
+		return "archive_multivolume"
+	case errors.Is(err, ErrArchiveUnsafePath):
+		return "archive_unsafe_path"
+	case errors.Is(err, ErrArchiveTooManyEntries):
+		return "archive_too_many_entries"
+	case errors.Is(err, ErrArchiveCorrupt):
+		return "archive_corrupt"
 	case errors.Is(err, storage.ErrTraversal):
 		return "path_traversal"
 	case errors.Is(err, storage.ErrInvalidName):

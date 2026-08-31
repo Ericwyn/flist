@@ -171,8 +171,9 @@ func (w *streamWriter) Write(b []byte) (int, error) {
 	n, err := w.tmp.Write(b)
 	if err != nil {
 		w.failed = true
+		return n, mapErr(err)
 	}
-	return n, err
+	return n, nil
 }
 
 // Close 落地临时文件为目标：出错路径清理临时文件；成功路径 fsync + rename。

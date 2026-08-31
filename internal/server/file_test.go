@@ -28,7 +28,8 @@ func newFSTestServer(t *testing.T) (http.Handler, string, string) {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	auth := service.NewAuthService(st, time.Hour, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	auth := service.NewAuthService(st, time.Hour, logger)
 	if _, _, err := auth.EnsureAdmin("admin", "secret12"); err != nil {
 		t.Fatal(err)
 	}
@@ -43,12 +44,14 @@ func newFSTestServer(t *testing.T) (http.Handler, string, string) {
 		t.Fatal(err)
 	}
 	files := service.NewFileService(local.New(rootReal, t.TempDir()), util.NewPathLocker(), 5<<20)
+	fileOps := service.NewFileOpService(files, logger)
 
 	router, err := NewRouter(Deps{
-		Config: &config.Config{SessionTTL: time.Hour},
-		Auth:   auth,
-		Files:  files,
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config:  &config.Config{SessionTTL: time.Hour},
+		Auth:    auth,
+		Files:   files,
+		FileOps: fileOps,
+		Logger:  logger,
 	})
 	if err != nil {
 		t.Fatal(err)
