@@ -11,6 +11,7 @@ import { InputModal } from './InputModal';
 import { ConfirmModal } from './ConfirmModal';
 import { SearchBar } from './SearchBar';
 import { cn } from '../lib/utils';
+import { formatSelectionSummary } from '../lib/selectionSummary';
 import { kindOf, joinPath, breadcrumbs, parentPath, isExtractableName } from '../lib/path';
 import { closeTopModal, subscribeModal, openModalCount } from '../lib/modalRegistry';
 import { api } from '../lib/api';
@@ -241,6 +242,9 @@ export function FileBrowser() {
   // 选中条目集合（派生）与单选便捷量（恰好选中一项时非空）。
   const selectedEntries = entries.filter((e) => selected.has(e.name));
   const singleSelected = selectedEntries.length === 1 ? selectedEntries[0] : null;
+  const multiSelectionSummary = selectedEntries.length > 1
+    ? formatSelectionSummary(selectedEntries)
+    : null;
 
   // 目录滚动位置按「路径 + 视图模式」做会话级恢复，避免长列表返回上级后丢失位置。
   useEffect(() => {
@@ -883,8 +887,8 @@ export function FileBrowser() {
               <span>剪贴板 {clipboard.paths.length} 项</span>
             </button>
           )}
-          <span className="min-w-0 truncate" title={selectedEntries.length > 1 ? undefined : singleSelected ? singleSelected.name : currentPath}>
-            {selectedEntries.length > 1 ? `已选 ${selectedEntries.length} 项` : singleSelected ? singleSelected.name : currentPath}
+          <span className="min-w-0 truncate" title={multiSelectionSummary ?? (singleSelected ? singleSelected.name : currentPath)}>
+            {multiSelectionSummary ?? (singleSelected ? singleSelected.name : currentPath)}
           </span>
         </div>
       </div>
