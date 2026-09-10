@@ -33,7 +33,7 @@ function errMessage(e: unknown, map: Record<number, string>): string {
 }
 
 // 应用版本号（简单展示用，发版时手动同步）。
-const APP_VERSION = 'v0.7.0';
+const APP_VERSION = 'v0.8.0';
 
 type SettingsTab = 'account' | 'appearance' | 'sidebar';
 
@@ -43,65 +43,95 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const { theme, toggleTheme, recentEnabled, recentLimit, setRecentEnabled, setRecentLimit } = useStore();
   const [tab, setTab] = useState<SettingsTab>('account');
 
-  const tabs: { key: SettingsTab; label: string; icon: React.ReactNode }[] = [
-    { key: 'account', label: '账户', icon: <User className="w-3.5 h-3.5" /> },
-    { key: 'appearance', label: '主题', icon: <Palette className="w-3.5 h-3.5" /> },
-    { key: 'sidebar', label: '侧边栏', icon: <PanelLeft className="w-3.5 h-3.5" /> },
+  const tabs: { key: SettingsTab; label: string; description: string; icon: React.ReactNode }[] = [
+    { key: 'account', label: '账户', description: '登录、安全与密码', icon: <User className="w-4 h-4" /> },
+    { key: 'appearance', label: '主题', description: '界面明暗模式', icon: <Palette className="w-4 h-4" /> },
+    { key: 'sidebar', label: '侧边栏', description: '最近访问设置', icon: <PanelLeft className="w-4 h-4" /> },
   ];
+  const activeTab = tabs.find((item) => item.key === tab)!;
 
   return (
-    <Modal isOpen={true} onClose={onClose} title="设置" maxWidth="md">
-      {/* 标签栏：下划线式，激活项蓝色底边 */}
-      <div className="flex gap-5 border-b border-slate-100 dark:border-slate-800 mb-5">
-        {tabs.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
-            className={cn(
-              'flex items-center gap-1.5 pb-2 px-0.5 text-sm transition-colors border-b-2 -mb-px',
-              tab === t.key
-                ? 'border-blue-600 text-blue-600 dark:text-blue-400 font-medium'
-                : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300',
-            )}
+    <Modal
+      isOpen={true}
+      onClose={onClose}
+      title="设置"
+      maxWidth="2xl"
+      className="h-[640px] max-h-[calc(100dvh-2rem)]"
+      contentClassName="p-0 overflow-hidden"
+    >
+      <div className="flex h-full min-h-0">
+        <aside className="flex w-[76px] sm:w-40 shrink-0 flex-col border-r border-slate-100 bg-slate-50/80 dark:border-slate-800 dark:bg-slate-950/30">
+          <nav className="flex-1 space-y-1 p-2.5" role="tablist" aria-label="设置分类">
+            {tabs.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                role="tab"
+                aria-selected={tab === item.key}
+                aria-controls="settings-panel"
+                onClick={() => setTab(item.key)}
+                title={item.label}
+                className={cn(
+                  'relative flex w-full items-center justify-center gap-2 rounded-lg px-2.5 py-2.5 text-sm transition-colors sm:justify-start',
+                  tab === item.key
+                    ? 'bg-white font-medium text-blue-600 shadow-sm ring-1 ring-slate-200/70 dark:bg-slate-800 dark:text-blue-400 dark:ring-slate-700'
+                    : 'text-slate-500 hover:bg-white/70 hover:text-slate-800 dark:text-slate-400 dark:hover:bg-slate-800/60 dark:hover:text-slate-200',
+                )}
+              >
+                <span className="shrink-0">{item.icon}</span>
+                <span className="hidden sm:inline">{item.label}</span>
+              </button>
+            ))}
+          </nav>
+
+          <div className="border-t border-slate-100 p-2.5 dark:border-slate-800">
+            <button
+              type="button"
+              onClick={() => logout()}
+              title="退出登录"
+              className="flex w-full items-center justify-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium text-rose-600 transition-colors hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-900/20 sm:justify-start"
+            >
+              <LogOut className="w-4 h-4 shrink-0" />
+              <span className="hidden sm:inline">退出登录</span>
+            </button>
+            <div className="mt-1 truncate text-center text-[10px] text-slate-400 select-none dark:text-slate-600 sm:text-left sm:pl-2.5">
+              <span className="hidden sm:inline">flist </span>{APP_VERSION}
+            </div>
+          </div>
+        </aside>
+
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className="shrink-0 border-b border-slate-100 px-4 py-3.5 dark:border-slate-800 sm:px-6">
+            <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-100">{activeTab.label}</h4>
+            <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">{activeTab.description}</p>
+          </div>
+
+          <div
+            id="settings-panel"
+            role="tabpanel"
+            className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6"
           >
-            {t.icon}
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {/* tab 内容：仅渲染当前激活项，避免非账户 tab 触发 2FA 状态请求 */}
-      {tab === 'account' && (
-        <div className="space-y-6">
-          <AccountSection
-            currentName={user?.username ?? ''}
-            onUpdated={(name) => setUser({ id: user?.id ?? 0, username: name })}
-          />
-          <PasswordSection />
-          <TwoFactorSection />
-        </div>
-      )}
-      {tab === 'appearance' && <AppearanceSection theme={theme} onToggle={toggleTheme} />}
-      {tab === 'sidebar' && (
-        <RecentAccessSection
-          enabled={recentEnabled}
-          limit={recentLimit}
-          onToggle={setRecentEnabled}
-          onLimitChange={setRecentLimit}
-        />
-      )}
-
-      {/* 常驻页脚：退出登录 + 版本号，跨 tab 始终可见 */}
-      <div className="mt-5 pt-4 border-t border-slate-100 dark:border-slate-800 space-y-2">
-        <button
-          onClick={() => logout()}
-          className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium rounded-lg text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-900/20 hover:bg-rose-100 dark:hover:bg-rose-900/30 transition-colors"
-        >
-          <LogOut className="w-4 h-4" />
-          退出登录
-        </button>
-        <div className="text-[11px] text-slate-400 dark:text-slate-600 text-center select-none">
-          flist {APP_VERSION}
+            {/* 仅渲染当前激活项，避免非账户 tab 触发 2FA 状态请求。 */}
+            {tab === 'account' && (
+              <div className="space-y-6">
+                <AccountSection
+                  currentName={user?.username ?? ''}
+                  onUpdated={(name) => setUser({ id: user?.id ?? 0, username: name })}
+                />
+                <PasswordSection />
+                <TwoFactorSection />
+              </div>
+            )}
+            {tab === 'appearance' && <AppearanceSection theme={theme} onToggle={toggleTheme} />}
+            {tab === 'sidebar' && (
+              <RecentAccessSection
+                enabled={recentEnabled}
+                limit={recentLimit}
+                onToggle={setRecentEnabled}
+                onLimitChange={setRecentLimit}
+              />
+            )}
+          </div>
         </div>
       </div>
     </Modal>
