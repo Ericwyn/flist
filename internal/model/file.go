@@ -38,6 +38,26 @@ type PreviewResult struct {
 	PreviewBytes int    `json:"preview_bytes"` // 预览读取上限
 }
 
+// ImageMetadata 是图片原始信息与可识别 EXIF 字段的集合。
+// EXIF 使用有序列表而不是固定结构，便于后续扩展更多厂商字段且保持前端展示顺序稳定。
+type ImageMetadata struct {
+	Format     string               `json:"format"`
+	MIME       string               `json:"mime"`
+	Width      int                  `json:"width,omitempty"`
+	Height     int                  `json:"height,omitempty"`
+	ColorModel string               `json:"color_model,omitempty"`
+	Size       int64                `json:"size"`
+	ModTime    time.Time            `json:"mod_time"`
+	EXIF       []ImageMetadataField `json:"exif"`
+}
+
+// ImageMetadataField 是一个经过安全格式化的图片元数据字段。
+type ImageMetadataField struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
 // OpResult 批量写操作（move / delete）的单条结果。
 type OpResult struct {
 	Src   string `json:"src"`             // 操作对象的 API 路径

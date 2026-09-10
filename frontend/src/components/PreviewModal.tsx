@@ -12,6 +12,7 @@ import { PreviewResult } from '../types';
 import { Modal } from './Modal';
 import { ConflictDialog } from './ConflictDialog';
 import { SaveAsDialog } from './SaveAsDialog';
+import { ImagePreview } from './ImagePreview';
 import { useFileEditor } from '../lib/useFileEditor';
 import { formatBytes } from '../lib/utils';
 import {
@@ -201,7 +202,7 @@ export function PreviewModal() {
       isOpen={true}
       onClose={requestClose}
       title={previewEntry.name}
-      maxWidth={isPdf ? '6xl' : '4xl'}
+      maxWidth={isPdf || kind === 'image' ? '6xl' : '4xl'}
       contentClassName="bg-slate-50 dark:bg-slate-950/50 p-0"
       footer={footer}
     >
@@ -225,9 +226,7 @@ export function PreviewModal() {
         )}
 
         {kind === 'image' && (
-          <div className="flex items-center justify-center min-h-[40vh] max-h-[72vh]">
-            <img key={previewPath} src={inlineUrl} alt={previewEntry.name} className="max-w-full max-h-[70vh] object-contain" />
-          </div>
+          <ImagePreview key={previewPath} path={previewPath} url={inlineUrl} name={previewEntry.name} />
         )}
 
         {kind === 'video' && (

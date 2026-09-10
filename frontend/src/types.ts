@@ -34,6 +34,24 @@ export interface PreviewResult {
   previewBytes: number;
 }
 
+export interface ImageMetadataField {
+  key: string;
+  label: string;
+  value: string;
+}
+
+// 图片文件级信息与原始 EXIF 拍摄数据。
+export interface ImageMetadata {
+  format: string;
+  mime: string;
+  width?: number;
+  height?: number;
+  colorModel?: string;
+  size: number;
+  modTime: string;
+  exif: ImageMetadataField[];
+}
+
 export interface ListOptions {
   sort?: 'name' | 'size' | 'mtime';
   order?: 'asc' | 'desc';

@@ -4,6 +4,7 @@ import {
   OpResult, SearchResult, SearchHit, SearchOptions, Bookmark,
   UploadInitResult, FileContent, SaveContentResult, SpaceInfo, FileRevision,
   FileOpStartResult, SystemInfo, Device,
+  ImageMetadata,
 } from '../types';
 import { parentPath, joinPath } from './path';
 
@@ -187,6 +188,22 @@ export const api = {
         truncated: raw.truncated,
         size: raw.size,
         previewBytes: raw.preview_bytes,
+      };
+    },
+
+    async imageMetadata(path: string): Promise<ImageMetadata> {
+      const raw = await request<RawImageMetadata>(
+        `/api/fs/image-metadata?path=${encodeURIComponent(path)}`,
+      );
+      return {
+        format: raw.format,
+        mime: raw.mime,
+        width: raw.width,
+        height: raw.height,
+        colorModel: raw.color_model,
+        size: raw.size,
+        modTime: raw.mod_time,
+        exif: raw.exif ?? [],
       };
     },
 
@@ -656,6 +673,17 @@ interface RawPreview {
   truncated: boolean;
   size: number;
   preview_bytes: number;
+}
+
+interface RawImageMetadata {
+  format: string;
+  mime: string;
+  width?: number;
+  height?: number;
+  color_model?: string;
+  size: number;
+  mod_time: string;
+  exif: Array<{ key: string; label: string; value: string }>;
 }
 
 interface RawPathResult {

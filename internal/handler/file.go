@@ -155,6 +155,21 @@ func (h *FileHandler) Preview(w http.ResponseWriter, r *http.Request) {
 	OK(w, res)
 }
 
+// ImageMetadata 处理 GET /api/fs/image-metadata。
+func (h *FileHandler) ImageMetadata(w http.ResponseWriter, r *http.Request) {
+	apiPath := r.URL.Query().Get("path")
+	if apiPath == "" {
+		failBadRequest(w, "path required")
+		return
+	}
+	res, err := h.files.ImageMetadata(r.Context(), apiPath)
+	if err != nil {
+		failFileErr(w, err)
+		return
+	}
+	OK(w, res)
+}
+
 // Download 处理 GET /api/fs/download，经 http.ServeContent 支持 Range / ETag。
 //
 // 注意：http.ServeContent 要求 target.File 可 Seek。本地驱动返回 *os.File 天然满足；
