@@ -13,6 +13,7 @@ import { Modal } from './Modal';
 import { ConflictDialog } from './ConflictDialog';
 import { SaveAsDialog } from './SaveAsDialog';
 import { ImagePreview } from './ImagePreview';
+import { DocumentPreview, type RichDocumentKind } from './DocumentPreview';
 import { useFileEditor } from '../lib/useFileEditor';
 import { formatBytes } from '../lib/utils';
 import {
@@ -26,6 +27,8 @@ import {
   Save,
   Undo2,
   FileWarning,
+  Eye,
+  PenLine,
 } from 'lucide-react';
 
 export function PreviewModal() {
@@ -41,10 +44,15 @@ export function PreviewModal() {
   } = useFsStore();
 
   const kind = previewEntry ? kindOf(previewEntry) : 'unknown';
-  const isTextKind = kind === 'text' || kind === 'unknown';
+  const isRichTextKind = kind === 'markdown' || kind === 'csv';
+  const isTextKind = kind === 'text' || kind === 'unknown' || isRichTextKind;
   const isPdf = kind === 'pdf';
+  const isOfficeDocument = kind === 'spreadsheet' || kind === 'document' || kind === 'presentation';
+  const [textViewState, setTextViewState] = useState<{ path: string; mode: 'preview' | 'edit' }>({ path: '', mode: 'preview' });
+  const textView = isRichTextKind && textViewState.path === previewPath ? textViewState.mode : 'preview';
+  const editorVisible = isTextKind && (!isRichTextKind || textView === 'edit');
   // 仅文本/未知类型走可编辑内容接口；媒体类型传空 path 让 hook 短路（不发请求、不挂载编辑器）。
-  const ed = useFileEditor(isTextKind && previewPath ? previewPath : '');
+  const ed = useFileEditor(editorVisible && previewPath ? previewPath : '');
 
   // 关闭拦截：有未保存改动时先二次确认。
   const [confirmClose, setConfirmClose] = useState(false);
@@ -152,7 +160,7 @@ export function PreviewModal() {
         <Download className="w-3.5 h-3.5" />
         <span>下载</span>
       </a>
-      {(editable || tooLarge) && (
+      {editorVisible && (editable || tooLarge) && (
         <button
           onClick={() => window.open(editorUrl, '_blank', 'noopener')}
           className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
@@ -161,7 +169,7 @@ export function PreviewModal() {
           <span>新窗口编辑</span>
         </button>
       )}
-      {editable && (
+      {editorVisible && editable && (
         <>
           <span className="w-px h-5 bg-slate-200 dark:bg-slate-700" />
           <button
@@ -202,7 +210,7 @@ export function PreviewModal() {
       isOpen={true}
       onClose={requestClose}
       title={previewEntry.name}
-      maxWidth={isPdf || kind === 'image' ? '6xl' : '4xl'}
+      maxWidth={isPdf || kind === 'image' || isRichTextKind || isOfficeDocument ? '6xl' : '4xl'}
       contentClassName="bg-slate-50 dark:bg-slate-950/50 p-0"
       footer={footer}
     >
@@ -254,19 +262,49 @@ export function PreviewModal() {
           <PdfPreview url={inlineUrl} title={previewEntry.name} downloadUrl={downloadUrl} />
         )}
 
+        {isOfficeDocument && (
+          <DocumentPreview
+            kind={kind as RichDocumentKind}
+            path={previewPath}
+            name={previewEntry.name}
+            size={previewEntry.size}
+            downloadUrl={downloadUrl}
+          />
+        )}
+
         {isTextKind && (
           <div className="w-full">
-            {ed.loading && (
+            {isRichTextKind && (
+              <TextViewSwitcher
+                mode={textView}
+                dirty={ed.dirty}
+                onPreview={() => setTextViewState({ path: previewPath, mode: 'preview' })}
+                onEdit={() => setTextViewState({ path: previewPath, mode: 'edit' })}
+              />
+            )}
+
+            {isRichTextKind && textView === 'preview' && (
+              <DocumentPreview
+                kind={kind as RichDocumentKind}
+                path={previewPath}
+                name={previewEntry.name}
+                size={previewEntry.size}
+                downloadUrl={downloadUrl}
+                compact
+              />
+            )}
+
+            {editorVisible && ed.loading && (
               <div className="flex items-center justify-center min-h-[40vh] text-slate-400">
                 <Loader2 className="w-6 h-6 animate-spin" />
               </div>
             )}
 
             {/* 过大：回落到截断只读预览。 */}
-            {!ed.loading && tooLarge && <TextPreviewFallback path={previewPath} downloadUrl={downloadUrl} name={previewEntry.name} />}
+            {editorVisible && !ed.loading && tooLarge && <TextPreviewFallback path={previewPath} downloadUrl={downloadUrl} name={previewEntry.name} />}
 
             {/* 其他加载失败（如二进制 2013）：提示 + 下载。 */}
-            {!ed.loading && ed.loadError && !tooLarge && (
+            {editorVisible && !ed.loading && ed.loadError && !tooLarge && (
               <div className="text-slate-500 flex flex-col items-center py-12">
                 <File className="w-12 h-12 mb-3 opacity-50" />
                 <p className="text-sm">{ed.loadError}</p>
@@ -277,7 +315,7 @@ export function PreviewModal() {
             )}
 
             {/* 可编辑：内联 CodeMirror。 */}
-            {!ed.loading && !ed.loadError && meta && (
+            {editorVisible && !ed.loading && !ed.loadError && meta && (
               <div className="flex flex-col h-[60vh]">
                 <div className="flex items-center gap-2 px-4 py-1.5 shrink-0 text-[11px] text-slate-400 dark:text-slate-500 border-b border-slate-100 dark:border-slate-800/50">
                   <span className="truncate">{formatBytes(meta.size)} · {meta.encoding}</span>
@@ -366,6 +404,44 @@ export function PreviewModal() {
         </div>
       )}
     </Modal>
+  );
+}
+
+function TextViewSwitcher({
+  mode,
+  dirty,
+  onPreview,
+  onEdit,
+}: {
+  mode: 'preview' | 'edit';
+  dirty: boolean;
+  onPreview: () => void;
+  onEdit: () => void;
+}) {
+  return (
+    <div className="flex h-11 items-center justify-between border-b border-slate-200 bg-white px-4 dark:border-white/8 dark:bg-slate-900">
+      <div className="inline-flex rounded-lg bg-slate-100 p-1 dark:bg-slate-800">
+        <button
+          type="button"
+          onClick={onPreview}
+          disabled={dirty}
+          aria-pressed={mode === 'preview'}
+          title={dirty ? '请先保存或恢复当前修改' : '渲染预览'}
+          className={`inline-flex h-7 items-center gap-1.5 rounded-md px-3 text-[11px] font-medium transition-all disabled:cursor-not-allowed disabled:opacity-40 ${mode === 'preview' ? 'bg-white text-slate-800 shadow-sm dark:bg-slate-700 dark:text-white' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white'}`}
+        >
+          <Eye className="h-3.5 w-3.5" />预览
+        </button>
+        <button
+          type="button"
+          onClick={onEdit}
+          aria-pressed={mode === 'edit'}
+          className={`inline-flex h-7 items-center gap-1.5 rounded-md px-3 text-[11px] font-medium transition-all ${mode === 'edit' ? 'bg-white text-slate-800 shadow-sm dark:bg-slate-700 dark:text-white' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white'}`}
+        >
+          <PenLine className="h-3.5 w-3.5" />编辑源码
+        </button>
+      </div>
+      <span className="hidden text-[10px] text-slate-400 sm:block">预览模式不会执行文档中的脚本或 HTML</span>
+    </div>
   );
 }
 

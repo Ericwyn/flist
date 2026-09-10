@@ -170,6 +170,23 @@ func (h *FileHandler) ImageMetadata(w http.ResponseWriter, r *http.Request) {
 	OK(w, res)
 }
 
+// DocumentPreview 处理 GET /api/fs/document-preview，只提供不超过 20 MiB 的文件。
+func (h *FileHandler) DocumentPreview(w http.ResponseWriter, r *http.Request) {
+	apiPath := r.URL.Query().Get("path")
+	if apiPath == "" {
+		failBadRequest(w, "path required")
+		return
+	}
+	target, err := h.files.OpenForDocumentPreview(r.Context(), apiPath)
+	if err != nil {
+		failFileErr(w, err)
+		return
+	}
+	defer target.File.Close()
+	w.Header().Set("X-Flist-Preview-Max-Bytes", strconv.FormatInt(service.DocumentPreviewMaxBytes, 10))
+	serveFileContent(w, r, target, false)
+}
+
 // Download 处理 GET /api/fs/download，经 http.ServeContent 支持 Range / ETag。
 //
 // 注意：http.ServeContent 要求 target.File 可 Seek。本地驱动返回 *os.File 天然满足；
@@ -187,7 +204,10 @@ func (h *FileHandler) Download(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer target.File.Close()
+	serveFileContent(w, r, target, r.URL.Query().Get("download") == "1")
+}
 
+func serveFileContent(w http.ResponseWriter, r *http.Request, target *service.DownloadTarget, attachment bool) {
 	name := target.Info.Name
 	modTime := target.Info.ModTime
 
@@ -203,7 +223,7 @@ func (h *FileHandler) Download(w http.ResponseWriter, r *http.Request) {
 
 	// 默认内联（便于媒体直链），download=1 时强制附件下载。
 	disposition := "inline"
-	if r.URL.Query().Get("download") == "1" {
+	if attachment {
 		disposition = "attachment"
 	}
 	w.Header().Set("Content-Disposition", disposition+"; filename*=UTF-8''"+urlEncode(name))

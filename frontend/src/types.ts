@@ -2,7 +2,19 @@
 export type EntryType = 'file' | 'dir';
 
 // 供前端图标与预览决策的大类（按扩展名推导）。
-export type FileKind = 'folder' | 'text' | 'image' | 'video' | 'audio' | 'pdf' | 'unknown';
+export type FileKind =
+  | 'folder'
+  | 'text'
+  | 'markdown'
+  | 'csv'
+  | 'spreadsheet'
+  | 'document'
+  | 'presentation'
+  | 'image'
+  | 'video'
+  | 'audio'
+  | 'pdf'
+  | 'unknown';
 
 // 单个文件/目录条目，对应后端 model.FileInfo。
 export interface FileEntry {

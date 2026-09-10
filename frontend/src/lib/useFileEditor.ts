@@ -48,7 +48,7 @@ export interface UseFileEditor {
 }
 
 // useFileEditor 接收目标文件 API 路径，返回编辑器状态与操作。host 元素由调用方渲染并挂载 hostRef。
-export function useFileEditor(path: string): UseFileEditor {
+export function useFileEditor(path: string, editorActive = true): UseFileEditor {
   const theme = useStore((s) => s.theme);
   const [meta, setMeta] = useState<FileContent | null>(null);
   const [loading, setLoading] = useState(true);
@@ -73,11 +73,18 @@ export function useFileEditor(path: string): UseFileEditor {
   // 加载文件内容。
   useEffect(() => {
     if (!path) {
-      setLoadError('缺少 path 参数');
+      setMeta(null);
+      setLoadError(null);
+      setLoadErrorCode(null);
+      setDirty(false);
+      setSaveError(null);
+      setConflict(null);
+      setSavedAt(null);
       setLoading(false);
       return;
     }
     let cancelled = false;
+    setMeta(null);
     setLoading(true);
     setLoadError(null);
     setLoadErrorCode(null);
@@ -107,7 +114,7 @@ export function useFileEditor(path: string): UseFileEditor {
 
   // meta 就绪后创建 CodeMirror 实例（仅文本可编辑时）。meta 变化（如重新加载远端）会重建视图。
   useEffect(() => {
-    if (!meta || !hostRef.current || !meta.editable) return;
+    if (!editorActive || !meta || !hostRef.current || !meta.editable) return;
     const dark = theme === 'dark';
 
     const state = EditorState.create({
@@ -142,7 +149,7 @@ export function useFileEditor(path: string): UseFileEditor {
       viewRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [meta]);
+  }, [meta, editorActive]);
 
   // 主题切换时热更新编辑器配色。
   useEffect(() => {

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -8,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -199,6 +201,47 @@ func TestFSDownload_Dir(t *testing.T) {
 	json.Unmarshal(rec.Body.Bytes(), &env)
 	if env["code"].(float64) != 2007 {
 		t.Errorf("expected code 2007, got %v", env["code"])
+	}
+}
+
+func TestFSDocumentPreviewEnforcesSizeLimit(t *testing.T) {
+	h, token, root := newFSTestServer(t)
+	file := filepath.Join(root, "large.xlsx")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(file, service.DocumentPreviewMaxBytes+1); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/fs/document-preview?path=/large.xlsx", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d", rec.Code)
+	}
+}
+
+func TestFSDocumentPreviewServesSmallFile(t *testing.T) {
+	h, token, root := newFSTestServer(t)
+	content := []byte("small workbook bytes")
+	if err := os.WriteFile(filepath.Join(root, "small.xlsx"), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/fs/document-preview?path=/small.xlsx", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), content) {
+		t.Fatalf("unexpected body: %q", rec.Body.Bytes())
+	}
+	if rec.Header().Get("X-Flist-Preview-Max-Bytes") != strconv.Itoa(service.DocumentPreviewMaxBytes) {
+		t.Fatalf("unexpected preview limit header: %q", rec.Header().Get("X-Flist-Preview-Max-Bytes"))
 	}
 }
 

@@ -16,6 +16,22 @@ export default defineConfig(() => {
         output: {
           manualChunks(id) {
             if (!id.includes('node_modules')) return;
+            // 文档预览器体积较大，只在用户真正打开对应文件时加载。
+            if (id.includes('/xlsx/')) return 'preview-excel';
+            if (id.includes('/papaparse/')) return 'preview-csv';
+            if (id.includes('/docx-preview/')) return 'preview-docx';
+            if (id.includes('/jszip/')) return 'preview-office-core';
+            if (
+              id.includes('/react-markdown/') || id.includes('/remark-') || id.includes('/rehype-')
+              || id.includes('/micromark') || id.includes('/mdast-util-') || id.includes('/hast-util-')
+              || id.includes('/unified/') || id.includes('/unist-util-') || id.includes('/vfile')
+              || id.includes('/markdown-table/') || id.includes('/property-information/')
+            ) {
+              return 'preview-markdown';
+            }
+            if (id.includes('/@aiden0z/pptx-renderer/') || id.includes('/echarts/') || id.includes('/zrender/')) {
+              return 'preview-pptx';
+            }
             if (id.includes('/react/') || id.includes('/react-dom/') || id.includes('/scheduler/')) {
               return 'vendor-react';
             }

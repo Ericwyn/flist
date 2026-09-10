@@ -8,6 +8,10 @@ import {
   Music,
   File,
   FileType,
+  FileSpreadsheet,
+  Presentation,
+  BookOpenText,
+  FileCode2,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 
@@ -23,6 +27,15 @@ export function FileIcon({ kind, className, style }: FileIconProps) {
       return <Folder className={cn('text-amber-500 fill-amber-500/20', className)} style={style} />;
     case 'text':
       return <FileText className={cn('text-slate-400', className)} style={style} />;
+    case 'markdown':
+      return <FileCode2 className={cn('text-sky-500', className)} style={style} />;
+    case 'csv':
+    case 'spreadsheet':
+      return <FileSpreadsheet className={cn('text-emerald-500', className)} style={style} />;
+    case 'document':
+      return <BookOpenText className={cn('text-blue-600', className)} style={style} />;
+    case 'presentation':
+      return <Presentation className={cn('text-orange-500', className)} style={style} />;
     case 'image':
       return <ImageIcon className={cn('text-blue-500', className)} style={style} />;
     case 'video':

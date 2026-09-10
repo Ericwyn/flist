@@ -214,6 +214,11 @@ export const api = {
       return `/api/fs/download?${params.toString()}`;
     },
 
+    // documentPreviewUrl 由服务端强制限制为 20 MiB，供浏览器端文档解析器读取。
+    documentPreviewUrl(path: string): string {
+      return `/api/fs/document-preview?path=${encodeURIComponent(path)}`;
+    },
+
     // archive 把多文件 / 目录打包为 zip 下载（流式生成）。
     // 非 200 时先解析 JSON 错误信封抛 ApiError；200 则流式读取响应体并触发浏览器下载。
     // name 为 zip 文件名（不含扩展名），缺省时由后端按选择回落。

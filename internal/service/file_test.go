@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"flist/internal/model"
+	"flist/internal/storage"
 	"flist/internal/storage/local"
 	"flist/internal/util"
 )
@@ -240,6 +241,30 @@ func TestOpenForDownload(t *testing.T) {
 
 	if _, err := svc.OpenForDownload(context.Background(), "/"); err != ErrNotFile {
 		t.Errorf("expected ErrNotFile for root dir, got %v", err)
+	}
+}
+
+func TestOpenForDocumentPreviewSizeLimit(t *testing.T) {
+	svc, root := setupTestRoot(t)
+	withinLimit := filepath.Join(root, "within.xlsx")
+	if err := os.WriteFile(withinLimit, []byte("small"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target, err := svc.OpenForDocumentPreview(context.Background(), "/within.xlsx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target.File.Close()
+
+	overLimit := filepath.Join(root, "oversized.xlsx")
+	if err := os.WriteFile(overLimit, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(overLimit, DocumentPreviewMaxBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.OpenForDocumentPreview(context.Background(), "/oversized.xlsx"); err != storage.ErrFileTooLarge {
+		t.Fatalf("expected ErrFileTooLarge, got %v", err)
 	}
 }
 

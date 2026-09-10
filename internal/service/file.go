@@ -37,6 +37,8 @@ const (
 	maxPageSize     = 1000
 	previewMaxBytes = 64 << 10 // 64 KiB
 	sniffBytes      = 512
+	// DocumentPreviewMaxBytes 是浏览器端 Office / 表格预览允许读取的文件上限。
+	DocumentPreviewMaxBytes = 20 << 20 // 20 MiB
 
 	defaultSearchLimit = 500
 	maxSearchLimit     = 1000
@@ -161,6 +163,20 @@ func (s *FileService) OpenForDownload(ctx context.Context, apiPath string) (*Dow
 		return nil, err
 	}
 	return &DownloadTarget{File: f, Info: info}, nil
+}
+
+// OpenForDocumentPreview 打开供浏览器端解析的文档，并在返回句柄前强制执行大小限制。
+// 该校验位于服务端，避免客户端列表信息过期或直接绕过前端限制。
+func (s *FileService) OpenForDocumentPreview(ctx context.Context, apiPath string) (*DownloadTarget, error) {
+	target, err := s.OpenForDownload(ctx, apiPath)
+	if err != nil {
+		return nil, err
+	}
+	if target.Info.Size > DocumentPreviewMaxBytes {
+		target.File.Close()
+		return nil, storage.ErrFileTooLarge
+	}
+	return target, nil
 }
 
 // Mkdir 创建单层目录，返回规范化后的 API 路径。

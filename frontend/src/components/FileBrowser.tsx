@@ -610,9 +610,9 @@ export function FileBrowser() {
     const fileItems: MenuItem[] = [
       { label: '打开预览', icon: <ExternalLink className="w-4 h-4" />, onClick: () => openEntry(entry) },
     ];
-    // 文本 / 未知类型提供编辑入口（媒体二进制不展示）。
+    // 普通文本、Markdown、CSV 与未知类型提供编辑入口（媒体 / Office 二进制不展示）。
     const fileKind = kindOf(entry);
-    if (fileKind === 'text' || fileKind === 'unknown') {
+    if (fileKind === 'text' || fileKind === 'markdown' || fileKind === 'csv' || fileKind === 'unknown') {
       fileItems.push(
         { label: '编辑', icon: <Pencil className="w-4 h-4" />, onClick: () => openEditor(entry) },
         { label: '新窗口编辑', icon: <ExternalLink className="w-4 h-4" />, onClick: () => openEditorNewWindow(entry) },

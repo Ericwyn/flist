@@ -10,7 +10,7 @@ const audioExts = new Set([
   'mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'opus', 'wma',
 ]);
 const textExts = new Set([
-  'txt', 'md', 'markdown', 'log', 'csv', 'json', 'yaml', 'yml', 'toml',
+  'txt', 'log', 'json', 'yaml', 'yml', 'toml',
   'ini', 'conf', 'cfg', 'xml', 'html', 'htm', 'css', 'scss', 'less',
   'js', 'jsx', 'ts', 'tsx', 'go', 'py', 'rb', 'rs', 'java', 'c', 'h',
   'cpp', 'hpp', 'cc', 'sh', 'bash', 'zsh', 'sql', 'env', 'kt', 'swift',
@@ -26,6 +26,11 @@ export function kindOf(entry: Pick<FileEntry, 'name' | 'type'>): FileKind {
   if (videoExts.has(ext)) return 'video';
   if (audioExts.has(ext)) return 'audio';
   if (ext === 'pdf') return 'pdf';
+  if (ext === 'md' || ext === 'markdown') return 'markdown';
+  if (ext === 'csv') return 'csv';
+  if (ext === 'xls' || ext === 'xlsx' || ext === 'xlsm' || ext === 'xlsb' || ext === 'ods') return 'spreadsheet';
+  if (ext === 'docx') return 'document';
+  if (ext === 'pptx') return 'presentation';
   if (textExts.has(ext)) return 'text';
   return 'unknown';
 }

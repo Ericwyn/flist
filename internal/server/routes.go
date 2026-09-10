@@ -79,6 +79,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 			protected.Get("/fs/stat", fileHandler.Stat)
 			protected.Get("/fs/preview", fileHandler.Preview)
 			protected.Get("/fs/image-metadata", fileHandler.ImageMetadata)
+			protected.Get("/fs/document-preview", fileHandler.DocumentPreview)
 			protected.Get("/fs/download", fileHandler.Download)
 
 			// 文本编辑读取与路径级容量（只读，仅受全局限流）。
