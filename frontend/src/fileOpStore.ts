@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { api, ApiError } from './lib/api';
 import {
   FileOpTask, FileOpStatus, FileOpKind, FileOpEvent, FileOpItem, FileOpItemStatus,
+  ConflictPolicy,
 } from './types';
 import { parentPath, baseName } from './lib/path';
 import { useAuthStore } from './authStore';
@@ -20,10 +21,10 @@ interface FileOpState {
   panelOpen: boolean;
 
   // startCopy/Move/Delete/Extract 发起异步任务，立即返回（不阻塞）；进度通过 SSE 推送。
-  startCopy: (srcs: string[], dst: string, autoRename?: boolean) => Promise<void>;
-  startMove: (srcs: string[], dst: string, autoRename?: boolean) => Promise<void>;
-  startDelete: (paths: string[]) => Promise<void>;
-  startExtract: (path: string) => Promise<void>;
+  startCopy: (srcs: string[], dst: string, autoRename?: boolean, conflictPolicy?: ConflictPolicy) => Promise<boolean>;
+  startMove: (srcs: string[], dst: string, autoRename?: boolean, conflictPolicy?: ConflictPolicy) => Promise<boolean>;
+  startDelete: (paths: string[]) => Promise<boolean>;
+  startExtract: (path: string) => Promise<boolean>;
   cancelTask: (id: string) => void;
   removeTask: (id: string) => void;
   clearFinished: () => void;
@@ -34,10 +35,10 @@ export const useFileOpStore = create<FileOpState>((set, get) => ({
   tasks: [],
   panelOpen: false,
 
-  startCopy: (srcs, dst, autoRename = false) =>
-    startOp(set, get, 'copy', srcs, dst, autoRename),
-  startMove: (srcs, dst, autoRename = false) =>
-    startOp(set, get, 'move', srcs, dst, autoRename),
+  startCopy: (srcs, dst, autoRename = false, conflictPolicy) =>
+    startOp(set, get, 'copy', srcs, dst, autoRename, conflictPolicy),
+  startMove: (srcs, dst, autoRename = false, conflictPolicy) =>
+    startOp(set, get, 'move', srcs, dst, autoRename, conflictPolicy),
   startDelete: (paths) => startOp(set, get, 'delete', paths, '', false),
   startExtract: (archivePath) =>
     startOp(set, get, 'extract', [archivePath], parentPath(archivePath), false),
@@ -78,12 +79,13 @@ async function startOp(
   srcs: string[],
   dst: string,
   autoRename: boolean,
-): Promise<void> {
-  if (srcs.length === 0) return;
+  conflictPolicy?: ConflictPolicy,
+): Promise<boolean> {
+  if (srcs.length === 0) return false;
   let res;
   try {
-    if (op === 'copy') res = await api.fs.op.copy(srcs, dst, autoRename);
-    else if (op === 'move') res = await api.fs.op.move(srcs, dst, autoRename);
+    if (op === 'copy') res = await api.fs.op.copy(srcs, dst, autoRename, conflictPolicy);
+    else if (op === 'move') res = await api.fs.op.move(srcs, dst, autoRename, conflictPolicy);
     else if (op === 'delete') res = await api.fs.op.delete(srcs);
     else res = await api.fs.op.extract(srcs[0]);
   } catch (e) {
@@ -107,7 +109,7 @@ async function startOp(
       error: opErrMessage(e),
     };
     set((s) => ({ tasks: [...s.tasks, failTask], panelOpen: true }));
-    return;
+    return false;
   }
 
   const task: FileOpTask = {
@@ -131,6 +133,7 @@ async function startOp(
   set((s) => ({ tasks: [...s.tasks, task], panelOpen: true }));
   persistTask(task);
   subscribe(set, get, task.id);
+  return true;
 }
 
 // subscribe 打开 SSE 并按事件更新任务状态；finished 后刷新相关目录。

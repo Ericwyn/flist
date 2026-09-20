@@ -9,6 +9,7 @@ import { ContextMenu, MenuItem } from './ContextMenu';
 import { PropertiesModal } from './PropertiesModal';
 import { InputModal } from './InputModal';
 import { ConfirmModal } from './ConfirmModal';
+import { TransferConflictModal } from './TransferConflictModal';
 import { SearchBar } from './SearchBar';
 import { cn } from '../lib/utils';
 import { formatSelectionSummary } from '../lib/selectionSummary';
@@ -143,6 +144,7 @@ export function FileBrowser() {
     searchOpen, searchQuery, searching, searchResults, searchTruncated, searchTimedOut, clearSearch, exitSearch,
     searchSelected, selectOneHit, toggleHit, rangeHit, selectAllHits, clearHitSelection,
     clipboard, copyToClipboard, cutToClipboard, copyPathsToClipboard, cutPathsToClipboard, paste, clearClipboard,
+    pasteConflict, resolvePasteConflict, cancelPasteConflict,
   } = useFsStore();
   const { viewMode, viewScale, setViewMode, zoomIn, zoomOut, resetViewScale, recordRecentAccess } = useStore();
   const addBookmark = useBookmarkStore((s) => s.add);
@@ -983,6 +985,16 @@ export function FileBrowser() {
           }
           onConfirm={() => removePaths(dialog.paths)}
           onClose={() => setDialog(null)}
+        />
+      )}
+      {pasteConflict && (
+        <TransferConflictModal
+          conflict={pasteConflict}
+          onChoose={async (policy) => {
+            const err = await resolvePasteConflict(policy);
+            if (err) notify(err);
+          }}
+          onClose={cancelPasteConflict}
         />
       )}
     </div>

@@ -11,7 +11,6 @@ import (
 	"errors"
 	"io"
 	"path"
-	"strconv"
 	"strings"
 	"time"
 
@@ -46,7 +45,7 @@ func (s *FileService) ResolveArchiveTargets(ctx context.Context, paths []string)
 			return nil, err
 		}
 		base := path.Base(cleaned)
-		name := dedupName(used, base)
+		name := dedupName(used, base, info.Type == model.TypeDir)
 		used[name] = true
 		targets = append(targets, ArchiveTarget{
 			APIPath: cleaned,
@@ -62,7 +61,7 @@ func (s *FileService) ResolveArchiveTargets(ctx context.Context, paths []string)
 //
 // 容错语义：单条文件打开失败（被并发删除 / 特殊文件 / 权限）经 onSkip 记录并跳过，
 // 不中断整个归档；符号链接一律跳过。返回非 nil error 仅表示 zip 写入层面的致命错误
-//（已写出部分字节，无法回滚）—— 此时不会写出 zip 中央目录，客户端据此判定下载损坏。
+// （已写出部分字节，无法回滚）—— 此时不会写出 zip 中央目录，客户端据此判定下载损坏。
 func (s *FileService) WriteArchive(ctx context.Context, w io.Writer, targets []ArchiveTarget, onSkip func(apiPath string, err error)) error {
 	zw := zip.NewWriter(w)
 	for _, t := range targets {
@@ -176,19 +175,13 @@ func createZipDir(zw *zip.Writer, name string) error {
 	return err
 }
 
-// dedupName 为 zip 顶层名去重：base 已用过则按 "name (2).ext" 递增探测首个未用名。
-func dedupName(used map[string]bool, base string) string {
+// dedupName 为 zip 顶层名去重：目录保留完整名称，文件保留扩展名。
+func dedupName(used map[string]bool, base string, isDir bool) string {
 	if !used[base] {
 		return base
 	}
-	ext := path.Ext(base)
-	stem := strings.TrimSuffix(base, ext)
-	if stem == "" { // dotfile（如 .env）：整体作主名
-		stem = base
-		ext = ""
-	}
 	for i := 2; ; i++ {
-		cand := stem + " (" + strconv.Itoa(i) + ")" + ext
+		cand := numberedName(base, isDir, i)
 		if !used[cand] {
 			return cand
 		}

@@ -341,9 +341,10 @@ func (h *FileHandler) Touch(w http.ResponseWriter, r *http.Request) {
 }
 
 type moveRequest struct {
-	Src        []string `json:"src"`
-	Dst        string   `json:"dst"`
-	AutoRename bool     `json:"auto_rename"`
+	Src            []string `json:"src"`
+	Dst            string   `json:"dst"`
+	AutoRename     bool     `json:"auto_rename"`
+	ConflictPolicy string   `json:"conflict_policy"`
 }
 
 type opResultsResponse struct {
@@ -357,7 +358,12 @@ func (h *FileHandler) Move(w http.ResponseWriter, r *http.Request) {
 		failBadRequest(w, "src and dst required")
 		return
 	}
-	results := h.files.Move(r.Context(), req.Src, req.Dst, req.AutoRename)
+	policy, err := service.ParseConflictPolicy(req.ConflictPolicy, req.AutoRename)
+	if err != nil {
+		failBadRequest(w, "invalid conflict_policy")
+		return
+	}
+	results := h.files.MoveWithPolicy(r.Context(), req.Src, req.Dst, policy)
 	for _, res := range results {
 		h.audit(r, "move", res.Src+" -> "+req.Dst, auditResult(res.OK))
 	}
@@ -365,9 +371,10 @@ func (h *FileHandler) Move(w http.ResponseWriter, r *http.Request) {
 }
 
 type copyRequest struct {
-	Src        []string `json:"src"`
-	Dst        string   `json:"dst"`
-	AutoRename bool     `json:"auto_rename"`
+	Src            []string `json:"src"`
+	Dst            string   `json:"dst"`
+	AutoRename     bool     `json:"auto_rename"`
+	ConflictPolicy string   `json:"conflict_policy"`
 }
 
 // Copy 处理 POST /api/fs/copy（批量，尽力而为）。
@@ -377,7 +384,12 @@ func (h *FileHandler) Copy(w http.ResponseWriter, r *http.Request) {
 		failBadRequest(w, "src and dst required")
 		return
 	}
-	results := h.files.Copy(r.Context(), req.Src, req.Dst, req.AutoRename)
+	policy, err := service.ParseConflictPolicy(req.ConflictPolicy, req.AutoRename)
+	if err != nil {
+		failBadRequest(w, "invalid conflict_policy")
+		return
+	}
+	results := h.files.CopyWithPolicy(r.Context(), req.Src, req.Dst, policy)
 	for _, res := range results {
 		h.audit(r, "copy", res.Src+" -> "+req.Dst, auditResult(res.OK))
 	}

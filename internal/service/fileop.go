@@ -58,14 +58,14 @@ type FileOpEvent struct {
 
 // fileOpTask 是一次异步文件操作的内存状态。
 type fileOpTask struct {
-	id         string
-	op         string
-	userScope  string
-	srcs       []string
-	dst        string
-	autoRename bool
-	startedAt  time.Time
-	finishedAt time.Time // 终态写入时间，Sweep 据此判定 TTL（不可用 startedAt，否则长任务一完成即被清）
+	id             string
+	op             string
+	userScope      string
+	srcs           []string
+	dst            string
+	conflictPolicy ConflictPolicy
+	startedAt      time.Time
+	finishedAt     time.Time // 终态写入时间，Sweep 据此判定 TTL（不可用 startedAt，否则长任务一完成即被清）
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -108,9 +108,26 @@ func NewFileOpService(files *FileService, logger *slog.Logger) *FileOpService {
 	return s
 }
 
+// Inspect performs the shallow preflight used by the paste conflict dialog.
+func (s *FileOpService) Inspect(ctx context.Context, op string, srcs []string, dst string) (*TransferInspection, error) {
+	if op != model.FileOpCopy && op != model.FileOpMove {
+		return nil, storage.ErrBadOp
+	}
+	return s.files.InspectTransfer(ctx, TransferOperation(op), srcs, dst)
+}
+
 // Start 创建并入队一个任务，返回任务句柄。队列满时返回 ErrFileOpBusy。
 // op ∈ {copy,move,delete,extract}。totalBytes 为 best-effort 估算；extract 取源包大小。
 func (s *FileOpService) Start(ctx context.Context, op, userScope string, srcs []string, dst string, autoRename bool) (*model.FileOpStartResult, error) {
+	policy, err := ParseConflictPolicy("", autoRename)
+	if err != nil {
+		return nil, err
+	}
+	return s.StartWithPolicy(ctx, op, userScope, srcs, dst, policy)
+}
+
+// StartWithPolicy creates an async copy / move task with an explicit conflict policy.
+func (s *FileOpService) StartWithPolicy(ctx context.Context, op, userScope string, srcs []string, dst string, policy ConflictPolicy) (*model.FileOpStartResult, error) {
 	if len(srcs) == 0 {
 		return nil, storage.ErrBadOp
 	}
@@ -121,6 +138,9 @@ func (s *FileOpService) Start(ctx context.Context, op, userScope string, srcs []
 		return nil, storage.ErrBadOp
 	}
 	if op == model.FileOpExtract && len(srcs) != 1 {
+		return nil, storage.ErrBadOp
+	}
+	if (op == model.FileOpCopy || op == model.FileOpMove) && policy != ConflictError && policy != ConflictRename && policy != ConflictMergeDirs {
 		return nil, storage.ErrBadOp
 	}
 
@@ -151,17 +171,17 @@ func (s *FileOpService) Start(ctx context.Context, op, userScope string, srcs []
 	}
 	taskCtx, cancel := context.WithCancel(context.Background())
 	t := &fileOpTask{
-		id:         id,
-		op:         op,
-		userScope:  userScope,
-		srcs:       srcs,
-		dst:        dst,
-		autoRename: autoRename,
-		startedAt:  time.Now(),
-		ctx:        taskCtx,
-		cancel:     cancel,
-		subs:       make(map[chan FileOpEvent]struct{}),
-		results:    make([]model.OpResult, 0, len(srcs)),
+		id:             id,
+		op:             op,
+		userScope:      userScope,
+		srcs:           srcs,
+		dst:            dst,
+		conflictPolicy: policy,
+		startedAt:      time.Now(),
+		ctx:            taskCtx,
+		cancel:         cancel,
+		subs:           make(map[chan FileOpEvent]struct{}),
+		results:        make([]model.OpResult, 0, len(srcs)),
 	}
 	t.snapshot = model.FileOpSnapshot{
 		Op:         op,
@@ -292,78 +312,62 @@ func (s *FileOpService) runTask(t *fileOpTask) {
 	}
 }
 
-// execTransfer 执行 copy（isCopy=true）或 move 的逐项处理。
+// execTransfer 执行 copy / move；具体落点、冲突和递归合并统一委托给 FileService。
 func (s *FileOpService) execTransfer(t *fileOpTask, isCopy bool) {
 	ctx := t.ctx
+	operation := TransferMove
+	if isCopy {
+		operation = TransferCopy
+	}
 	cleanedDst := util.CleanAPIPath(t.dst)
-	dstExists, dstIsDir := s.files.StatDir(ctx, cleanedDst)
+	dstInfo, dstExists, dstErr := s.files.statMaybe(ctx, cleanedDst)
+	dstIsDir := dstExists && dstInfo.Type == model.TypeDir
 	single := len(t.srcs) == 1
-
-	pc, _ := s.files.backend.(storage.ProgressCopier)
-
 	var doneBytes int64
+
 	for i, src := range t.srcs {
 		if ctx.Err() != nil {
-			// 入队后被取消、尚未开始该项：已处理项留在 results，剩余补 skipped。
 			s.finishRemainingCanceled(t, i)
 			s.finishTask(t, model.FileOpCanceled, t.results)
 			return
 		}
 		srcClean := util.CleanAPIPath(src)
-		target, fail := s.files.TransferTarget(ctx, srcClean, cleanedDst, dstExists, dstIsDir, single, t.autoRename)
-		if fail != nil {
-			t.results = append(t.results, *fail)
-			s.emitItemDone(t, i, fail.Src, false, fail.Error)
+		if dstErr != nil {
+			t.results = append(t.results, opFail(srcClean, dstErr))
+			s.emitItemDone(t, i, srcClean, false, errCodeName(dstErr))
 			continue
 		}
-
-		// 复制 / 跨盘 move 都会搬运字节，预检目标盘空间；同盘 rename 不消耗
-		// 空间，CheckSpace 内部走 Usager 取目标盘可用空间，同盘必然充足，不会误拦。
-		// 驱动未实现 Usager 时 CheckSpace 直接返回 nil，无副作用。
-		if err := s.files.CheckSpace(ctx, srcClean, path.Dir(target)); err != nil {
-			t.results = append(t.results, opFail(srcClean, err))
-			s.emitItemDone(t, i, srcClean, false, errCodeName(err))
+		if !dstIsDir && !single {
+			fail := opFail(srcClean, storage.ErrNotDir)
+			t.results = append(t.results, fail)
+			s.emitItemDone(t, i, srcClean, false, fail.Error)
 			continue
 		}
-
-		// 项信息：取 stat 得到 name/size。
+		target := cleanedDst
+		if dstIsDir {
+			target = path.Join(cleanedDst, path.Base(srcClean))
+		}
+		itemPolicy := t.conflictPolicy
+		if !dstIsDir {
+			itemPolicy = ConflictError
+		}
 		name, size := s.itemInfo(ctx, srcClean, target)
 		s.startItem(t, i, name, size)
-
-		var execErr error
-		if pc != nil {
-			cb := func(copied int64) { s.reportProgress(t, i, copied, size) }
-			if isCopy {
-				execErr = pc.CopyWithProgress(ctx, srcClean, target, cb)
-			} else {
-				execErr = pc.MoveWithProgress(ctx, srcClean, target, cb)
-			}
-		} else {
-			// 驱动不支持 ProgressCopier：回退到普通 Copy/Move（无项内字节进度）。
-			if isCopy {
-				execErr = s.files.backend.Copy(ctx, srcClean, target)
-			} else {
-				execErr = s.files.backend.Move(ctx, srcClean, target)
-			}
-		}
-
-		// CopyWithProgress / Copy 返回后，先判 execErr 再判 ctx.Err，避免竞态：
-		// 若文件恰好写完（execErr==nil）但 ctx 同时被取消，应如实标成功而非 canceled。
-		if execErr != nil {
+		result := s.files.TransferOne(ctx, operation, srcClean, target, itemPolicy,
+			func(copied int64) { s.reportProgress(t, i, copied, size) })
+		if !result.OK {
 			if ctx.Err() != nil {
-				// 取消中断复制：copyFile 已清理半成品 dst。
-				t.results = append(t.results, model.OpResult{Src: srcClean, OK: false, Error: "canceled"})
+				t.results = append(t.results, model.OpResult{Src: srcClean, OK: false, Error: "canceled", Target: result.Target, Outcome: result.Outcome})
 				s.emitItemDone(t, i, srcClean, false, "canceled")
 				s.finishRemainingCanceled(t, i+1)
 				s.finishTask(t, model.FileOpCanceled, t.results)
 				return
 			}
-			t.results = append(t.results, opFail(srcClean, execErr))
-			s.emitItemDone(t, i, srcClean, false, errCodeName(execErr))
+			t.results = append(t.results, result)
+			s.emitItemDone(t, i, srcClean, false, result.Error)
 			continue
 		}
-		// execErr == nil：该项成功（即使 ctx 恰好取消，文件已完整落盘，如实标成功）。
-		t.results = append(t.results, model.OpResult{Src: srcClean, OK: true})
+		t.results = append(t.results, result)
 		if size > 0 {
 			doneBytes += size
 		}
@@ -373,7 +377,6 @@ func (s *FileOpService) execTransfer(t *fileOpTask, isCopy bool) {
 		})
 		s.emitItemDone(t, i, srcClean, true, "")
 		if ctx.Err() != nil {
-			// 该项刚好完成、用户同时取消：该项成功，剩余项 skipped。
 			s.finishRemainingCanceled(t, i+1)
 			s.finishTask(t, model.FileOpCanceled, t.results)
 			return

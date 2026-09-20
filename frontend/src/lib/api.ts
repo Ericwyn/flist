@@ -5,6 +5,7 @@ import {
   UploadInitResult, FileContent, SaveContentResult, SpaceInfo, FileRevision,
   FileOpStartResult, SystemInfo, Device,
   ImageMetadata,
+  ConflictPolicy, TransferInspection,
 } from '../types';
 import { parentPath, joinPath } from './path';
 
@@ -304,21 +305,28 @@ export const api = {
 
     // move 批量移动 / 重命名，逐项返回结果（尽力而为）。
     // autoRename：仅「移入已存在目录」分支生效，落点同名时后端自动避让。
-    async move(src: string[], dst: string, autoRename = false): Promise<OpResult[]> {
+    async move(src: string[], dst: string, autoRename = false, conflictPolicy?: ConflictPolicy): Promise<OpResult[]> {
       const raw = await request<RawOpResults>('/api/fs/move', {
         method: 'POST',
-        body: { src, dst, auto_rename: autoRename },
+        body: { src, dst, auto_rename: autoRename, ...(conflictPolicy ? { conflict_policy: conflictPolicy } : {}) },
       });
       return raw.results || [];
     },
 
     // copy 批量复制，逐项返回结果（尽力而为）。autoRename 同 move。
-    async copy(src: string[], dst: string, autoRename = false): Promise<OpResult[]> {
+    async copy(src: string[], dst: string, autoRename = false, conflictPolicy?: ConflictPolicy): Promise<OpResult[]> {
       const raw = await request<RawOpResults>('/api/fs/copy', {
         method: 'POST',
-        body: { src, dst, auto_rename: autoRename },
+        body: { src, dst, auto_rename: autoRename, ...(conflictPolicy ? { conflict_policy: conflictPolicy } : {}) },
       });
       return raw.results || [];
+    },
+
+    async inspectTransfer(op: 'copy' | 'move', src: string[], dst: string): Promise<TransferInspection> {
+      return request<TransferInspection>('/api/fs/op/conflicts', {
+        method: 'POST',
+        body: { op, src, dst },
+      });
     },
 
     // rename 是 move 的便捷封装：把单个条目重命名为同目录下的新名（严格冲突，不避让）。
@@ -475,17 +483,17 @@ export const api = {
     // op: 异步文件操作任务（copy/move/delete/extract 后台化 + SSE 进度）。
     // 发起任务立即返回 task_id（HTTP 202）；进度通过 opProgress 订阅 SSE。
     op: {
-      async copy(src: string[], dst: string, autoRename = false): Promise<FileOpStartResult> {
+      async copy(src: string[], dst: string, autoRename = false, conflictPolicy?: ConflictPolicy): Promise<FileOpStartResult> {
         const raw = await request<RawFileOpStart>('/api/fs/op/copy', {
           method: 'POST',
-          body: { src, dst, auto_rename: autoRename },
+          body: { src, dst, auto_rename: autoRename, ...(conflictPolicy ? { conflict_policy: conflictPolicy } : {}) },
         });
         return mapFileOpStart(raw);
       },
-      async move(src: string[], dst: string, autoRename = false): Promise<FileOpStartResult> {
+      async move(src: string[], dst: string, autoRename = false, conflictPolicy?: ConflictPolicy): Promise<FileOpStartResult> {
         const raw = await request<RawFileOpStart>('/api/fs/op/move', {
           method: 'POST',
-          body: { src, dst, auto_rename: autoRename },
+          body: { src, dst, auto_rename: autoRename, ...(conflictPolicy ? { conflict_policy: conflictPolicy } : {}) },
         });
         return mapFileOpStart(raw);
       },

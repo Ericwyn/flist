@@ -77,6 +77,32 @@ export interface OpResult {
   src: string;
   ok: boolean;
   error?: string; // 失败时的错误码名
+  target?: string; // 实际落点（自动改名 / 合并时）
+  outcome?: 'moved' | 'copied' | 'renamed' | 'merged' | 'partial';
+}
+
+export type ConflictPolicy = 'error' | 'rename' | 'merge_dirs';
+
+export interface ConflictItem {
+  src: string;
+  target: string;
+  source_type: EntryType;
+  target_type: EntryType;
+  kind: 'directory_merge' | 'rename';
+}
+
+export interface TransferInspection {
+  has_conflicts: boolean;
+  directory_conflicts: number;
+  other_conflicts: number;
+  items: ConflictItem[];
+}
+
+export interface PasteConflict {
+  mode: 'copy' | 'cut';
+  paths: string[];
+  dst: string;
+  inspection: TransferInspection;
 }
 
 // 单条搜索命中，对应后端 model.SearchHit。

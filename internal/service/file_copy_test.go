@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -51,6 +52,17 @@ func TestCopy_ToSpecificName(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "renamed.txt")); err != nil {
 		t.Errorf("renamed copy missing: %v", err)
+	}
+}
+
+func TestCopy_ToSpecificNameConflictStaysStrict(t *testing.T) {
+	svc, root := setupTestRoot(t)
+	writeFile(t, root, "src.txt", "incoming")
+	writeFile(t, root, "renamed.txt", "existing")
+
+	results := svc.Copy(context.Background(), []string{"/src.txt"}, "/renamed.txt", true)
+	if len(results) != 1 || results[0].OK || results[0].Error != "file_exists" {
+		t.Fatalf("specific-name conflict should stay strict: %+v", results)
 	}
 }
 
@@ -171,9 +183,115 @@ func TestMove_AutoRename(t *testing.T) {
 	}
 }
 
+func TestCopy_MergeDirsAndRenameNestedFiles(t *testing.T) {
+	svc, root := setupTestRoot(t)
+	writeFile(t, root, "source/photos/2025/a.jpg", "incoming")
+	writeFile(t, root, "source/photos/2025/info.txt", "info")
+	writeFile(t, root, "dest/photos/2025/a.jpg", "existing")
+	writeFile(t, root, "dest/photos/2025/readme.txt", "readme")
+
+	results := svc.CopyWithPolicy(context.Background(), []string{"/source/photos"}, "/dest", ConflictMergeDirs)
+	if len(results) != 1 || !results[0].OK || results[0].Outcome != "merged" {
+		t.Fatalf("merge copy failed: %+v", results)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root, "dest/photos/2025/a.jpg")); string(got) != "existing" {
+		t.Fatalf("existing file was overwritten: %q", got)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root, "dest/photos/2025/a (2).jpg")); string(got) != "incoming" {
+		t.Fatalf("nested conflict was not renamed: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(root, "dest/photos/2025/info.txt")); err != nil {
+		t.Fatalf("new nested file missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "source/photos")); err != nil {
+		t.Fatalf("copy should retain source: %v", err)
+	}
+}
+
+func TestMove_MergeDirsRemovesEmptySource(t *testing.T) {
+	svc, root := setupTestRoot(t)
+	writeFile(t, root, "source/F.I.R/a.txt", "incoming")
+	os.MkdirAll(filepath.Join(root, "dest", "F.I.R"), 0o755)
+
+	results := svc.MoveWithPolicy(context.Background(), []string{"/source/F.I.R"}, "/dest", ConflictMergeDirs)
+	if len(results) != 1 || !results[0].OK || results[0].Outcome != "merged" {
+		t.Fatalf("merge move failed: %+v", results)
+	}
+	if _, err := os.Stat(filepath.Join(root, "dest", "F.I.R", "a.txt")); err != nil {
+		t.Fatalf("merged file missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "source", "F.I.R")); !os.IsNotExist(err) {
+		t.Fatalf("empty source directory should be removed, err=%v", err)
+	}
+}
+
+func TestCopy_RenameDottedDirectoryKeepsFullName(t *testing.T) {
+	svc, root := setupTestRoot(t)
+	writeFile(t, root, "F.I.R/inner.txt", "incoming")
+	os.MkdirAll(filepath.Join(root, "dest", "F.I.R"), 0o755)
+
+	results := svc.Copy(context.Background(), []string{"/F.I.R"}, "/dest", true)
+	if len(results) != 1 || !results[0].OK {
+		t.Fatalf("dotted directory copy failed: %+v", results)
+	}
+	if _, err := os.Stat(filepath.Join(root, "dest", "F.I.R (2)", "inner.txt")); err != nil {
+		t.Fatalf("expected full directory name suffix: %v", err)
+	}
+	if strings.Contains(results[0].Target, ".R") && strings.Contains(results[0].Target, "(2).R") {
+		t.Fatalf("directory was incorrectly treated as a file: %q", results[0].Target)
+	}
+}
+
+func TestCopy_RenameDottedFileKeepsExtension(t *testing.T) {
+	svc, root := setupTestRoot(t)
+	writeFile(t, root, "F.I.R", "incoming")
+	os.MkdirAll(filepath.Join(root, "dest"), 0o755)
+	writeFile(t, root, "dest/F.I.R", "existing")
+
+	results := svc.CopyWithPolicy(context.Background(), []string{"/F.I.R"}, "/dest", ConflictRename)
+	if len(results) != 1 || !results[0].OK {
+		t.Fatalf("dotted file copy failed: %+v", results)
+	}
+	if _, err := os.Stat(filepath.Join(root, "dest", "F.I (2).R")); err != nil {
+		t.Fatalf("expected dotted file suffix: %v", err)
+	}
+}
+
+func TestCopy_MergeTypeMismatchRenamesIncoming(t *testing.T) {
+	svc, root := setupTestRoot(t)
+	writeFile(t, root, "source/item", "incoming file")
+	os.MkdirAll(filepath.Join(root, "dest", "item"), 0o755)
+
+	results := svc.CopyWithPolicy(context.Background(), []string{"/source/item"}, "/dest", ConflictMergeDirs)
+	if len(results) != 1 || !results[0].OK || results[0].Outcome != "renamed" {
+		t.Fatalf("type mismatch should be renamed: %+v", results)
+	}
+	if _, err := os.Stat(filepath.Join(root, "dest", "item (2)")); err != nil {
+		t.Fatalf("renamed type-mismatch file missing: %v", err)
+	}
+}
+
+func TestInspectTransfer_DirectoryAndBatchConflicts(t *testing.T) {
+	svc, root := setupTestRoot(t)
+	os.MkdirAll(filepath.Join(root, "A", "one"), 0o755)
+	os.MkdirAll(filepath.Join(root, "B", "one"), 0o755)
+	os.MkdirAll(filepath.Join(root, "C", "two"), 0o755)
+	os.MkdirAll(filepath.Join(root, "D", "one"), 0o755)
+	writeFile(t, root, "A/file.txt", "a")
+	writeFile(t, root, "C/file.txt", "c")
+
+	inspection, err := svc.InspectTransfer(context.Background(), TransferMove, []string{"/A/one", "/C/two", "/A/file.txt", "/C/file.txt"}, "/D")
+	if err != nil {
+		t.Fatalf("inspect failed: %v", err)
+	}
+	if !inspection.HasConflicts || inspection.DirectoryConflicts != 1 || inspection.OtherConflicts != 1 {
+		t.Fatalf("unexpected inspection: %+v", inspection)
+	}
+}
+
 func TestTreeSize(t *testing.T) {
 	svc, root := setupTestRoot(t)
-	writeFile(t, root, "tree/a.txt", "12345")    // 5 bytes
+	writeFile(t, root, "tree/a.txt", "12345")     // 5 bytes
 	writeFile(t, root, "tree/sub/b.txt", "67890") // 5 bytes
 
 	n, err := svc.treeSize(context.Background(), "/tree")

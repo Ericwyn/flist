@@ -11,7 +11,6 @@ import (
 	"io"
 	"path"
 	"sort"
-	"strconv"
 	"strings"
 
 	"flist/internal/model"
@@ -204,53 +203,25 @@ func (s *FileService) Touch(ctx context.Context, apiPath string) (string, error)
 // autoRename 仅在「移入已存在目录」分支生效：落点同名时自动避让（name (2)）。
 // 「重命名 / 移动到指定名」分支始终严格冲突（保留 Phase 2 §5.3 语义）。
 func (s *FileService) Move(ctx context.Context, srcs []string, dst string, autoRename bool) []model.OpResult {
-	results := make([]model.OpResult, 0, len(srcs))
-	cleanedDst := util.CleanAPIPath(dst)
-	dstExists, dstIsDir := s.statDir(ctx, cleanedDst)
-	single := len(srcs) == 1
+	policy, _ := ParseConflictPolicy("", autoRename)
+	return s.MoveWithPolicy(ctx, srcs, dst, policy)
+}
 
-	for _, src := range srcs {
-		srcClean := util.CleanAPIPath(src)
-		targetAPI, fail := s.transferTarget(ctx, srcClean, cleanedDst, dstExists, dstIsDir, single, autoRename)
-		if fail != nil {
-			results = append(results, *fail)
-			continue
-		}
-		if err := s.backend.Move(ctx, srcClean, targetAPI); err != nil {
-			results = append(results, opFail(srcClean, err))
-		} else {
-			results = append(results, model.OpResult{Src: srcClean, OK: true})
-		}
-	}
-	return results
+// MoveWithPolicy performs a batch move using an explicit conflict policy.
+func (s *FileService) MoveWithPolicy(ctx context.Context, srcs []string, dst string, policy ConflictPolicy) []model.OpResult {
+	return s.Transfer(ctx, TransferMove, srcs, dst, policy, nil)
 }
 
 // Copy 批量复制，尽力而为，逐项返回结果。dst 语义与 Move 一致。
 // autoRename 同 Move；每项复制前做磁盘空间预检（驱动支持 Usager 时）。
 func (s *FileService) Copy(ctx context.Context, srcs []string, dst string, autoRename bool) []model.OpResult {
-	results := make([]model.OpResult, 0, len(srcs))
-	cleanedDst := util.CleanAPIPath(dst)
-	dstExists, dstIsDir := s.statDir(ctx, cleanedDst)
-	single := len(srcs) == 1
+	policy, _ := ParseConflictPolicy("", autoRename)
+	return s.CopyWithPolicy(ctx, srcs, dst, policy)
+}
 
-	for _, src := range srcs {
-		srcClean := util.CleanAPIPath(src)
-		targetAPI, fail := s.transferTarget(ctx, srcClean, cleanedDst, dstExists, dstIsDir, single, autoRename)
-		if fail != nil {
-			results = append(results, *fail)
-			continue
-		}
-		if err := s.checkSpace(ctx, srcClean, path.Dir(targetAPI)); err != nil {
-			results = append(results, opFail(srcClean, err))
-			continue
-		}
-		if err := s.backend.Copy(ctx, srcClean, targetAPI); err != nil {
-			results = append(results, opFail(srcClean, err))
-		} else {
-			results = append(results, model.OpResult{Src: srcClean, OK: true})
-		}
-	}
-	return results
+// CopyWithPolicy performs a batch copy using an explicit conflict policy.
+func (s *FileService) CopyWithPolicy(ctx context.Context, srcs []string, dst string, policy ConflictPolicy) []model.OpResult {
+	return s.Transfer(ctx, TransferCopy, srcs, dst, policy, nil)
 }
 
 // statDir 探测 dst 是否存在以及是否为目录（失败视为不存在）。
@@ -275,7 +246,17 @@ func (s *FileService) transferTarget(ctx context.Context, srcClean, cleanedDst s
 	if dstExists && dstIsDir {
 		base := path.Base(srcClean)
 		if autoRename {
-			return s.avoidConflict(ctx, cleanedDst, base), nil
+			if _, exists, err := s.statMaybe(ctx, path.Join(cleanedDst, base)); err == nil && !exists {
+				return path.Join(cleanedDst, base), nil
+			}
+			isDir := false
+			if info, err := s.backend.Stat(ctx, srcClean); err == nil {
+				isDir = info.Type == model.TypeDir
+			}
+			if target, err := s.nextConflictTarget(ctx, cleanedDst, base, isDir); err == nil {
+				return target, nil
+			}
+			return path.Join(cleanedDst, base), nil
 		}
 		return path.Join(cleanedDst, base), nil
 	}
@@ -290,29 +271,6 @@ func (s *FileService) transferTarget(ctx context.Context, srcClean, cleanedDst s
 // 语义与 Move/Copy 内部完全一致，避免在异步路径上重复实现业务规则。
 func (s *FileService) TransferTarget(ctx context.Context, src, dst string, dstExists, dstIsDir, single, autoRename bool) (string, *model.OpResult) {
 	return s.transferTarget(ctx, util.CleanAPIPath(src), util.CleanAPIPath(dst), dstExists, dstIsDir, single, autoRename)
-}
-
-// avoidConflict 为「移入目录」的落点探测不冲突的名字：dir/base 已存在时，
-// 按 "name (2).ext" → "name (3).ext" 递增探测首个不存在名（上限 maxRenameProbe）。
-// 文件保留扩展名，目录及 dotfile 整体作为主名。
-func (s *FileService) avoidConflict(ctx context.Context, dir, base string) string {
-	target := path.Join(dir, base)
-	if _, err := s.backend.Stat(ctx, target); err != nil {
-		return target // 不存在，直接用
-	}
-	ext := path.Ext(base)
-	stem := strings.TrimSuffix(base, ext)
-	if stem == "" { // dotfile（如 .bashrc）：整体作主名，不拆扩展名
-		stem = base
-		ext = ""
-	}
-	for i := 2; i < maxRenameProbe+2; i++ {
-		cand := path.Join(dir, stem+" ("+strconv.Itoa(i)+")"+ext)
-		if _, err := s.backend.Stat(ctx, cand); err != nil {
-			return cand
-		}
-	}
-	return target // 超限：回退原名，由 backend.Copy/Move 返回 ErrExists
 }
 
 // Usage 返回 apiPath 所在存储的总容量与可用空间（Phase 6 系统信息）。

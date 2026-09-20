@@ -447,7 +447,15 @@ function fileOpStatusLabel(task: FileOpTask, totPct: number, curPct: number): st
       }
       return `${task.doneItems}/${task.totalItems} 项 · ${totPct}%`;
     case 'done':
-      return task.op === 'extract' ? '解压完成' : `完成 · ${task.totalItems} 项`;
+      if (task.op === 'extract') return '解压完成';
+      if (task.results?.some((r) => !r.ok)) {
+        const ok = task.results.filter((r) => r.ok).length;
+        const fail = task.results.filter((r) => !r.ok).length;
+        return `部分完成 · 成功 ${ok} · 失败 ${fail}`;
+      }
+      if (task.results?.some((r) => r.outcome === 'merged')) return `完成 · 已合并 ${task.totalItems} 项`;
+      if (task.results?.some((r) => r.outcome === 'renamed')) return `完成 · 已自动改名 ${task.totalItems} 项`;
+      return `完成 · ${task.totalItems} 项`;
     case 'canceled': {
       // 取消时可能部分项已完成——展示明细让用户知道哪些成功。
       const ok = task.items?.filter((i) => i && i.status === 'done').length ?? 0;

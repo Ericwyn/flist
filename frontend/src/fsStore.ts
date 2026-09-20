@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { api, ApiError } from './lib/api';
-import { FileEntry, SearchHit, Clipboard } from './types';
+import { FileEntry, SearchHit, Clipboard, ConflictPolicy, PasteConflict } from './types';
 import { parentPath, joinPath } from './lib/path';
 import { useAuthStore } from './authStore';
 import { useStore } from './store';
@@ -47,6 +47,7 @@ interface FsState {
 
   // 剪贴板状态（复制 / 剪切两态）。
   clipboard: Clipboard | null;
+  pasteConflict: PasteConflict | null;
 
   navigate: (path: string, pushHistory?: boolean) => Promise<void>;
   initFromUrl: () => void;
@@ -92,7 +93,7 @@ interface FsState {
   toggleSearchRecursive: () => void;
   clearSearchHistory: () => void;
 
-  // 剪贴板：复制 / 剪切选中项，粘贴到当前目录（粘贴用 auto_rename 自动避让）。
+  // 剪贴板：复制 / 剪切选中项，粘贴到当前目录。
   // 返回错误信息字符串，成功返回 null。
   copyToClipboard: (entries: FileEntry[]) => void;
   cutToClipboard: (entries: FileEntry[]) => void;
@@ -100,6 +101,8 @@ interface FsState {
   copyPathsToClipboard: (paths: string[]) => void;
   cutPathsToClipboard: (paths: string[]) => void;
   paste: () => Promise<string | null>;
+  resolvePasteConflict: (policy: ConflictPolicy) => Promise<string | null>;
+  cancelPasteConflict: () => void;
   clearClipboard: () => void;
 }
 
@@ -212,6 +215,7 @@ export const useFsStore = create<FsState>((set, get) => ({
   searchAnchor: null,
 
   clipboard: null,
+  pasteConflict: null,
 
   navigate: async (path, pushHistory = true) => {
     const { sort, order, showHidden } = get();
@@ -582,23 +586,46 @@ export const useFsStore = create<FsState>((set, get) => ({
     set({ clipboard: { mode: 'cut', paths: [...paths] } });
   },
 
-  clearClipboard: () => set({ clipboard: null }),
+  clearClipboard: () => set({ clipboard: null, pasteConflict: null }),
 
   paste: async () => {
     const clip = get().clipboard;
     if (!clip || clip.paths.length === 0) return null;
     const dst = get().currentPath;
-    // 委托给异步文件操作服务：复制走 copy、剪切走 move；均开 auto_rename 自动避让。
-    // 任务进度通过传输面板展示，完成事件里按需刷新当前目录。立即返回不阻塞 UI。
-    if (clip.mode === 'copy') {
-      void useFileOpStore.getState().startCopy(clip.paths, dst, true);
-    } else {
-      void useFileOpStore.getState().startMove(clip.paths, dst, true);
-      // 剪切粘贴已发起即清空剪贴板（复制保留，便于多次粘贴）。
+    try {
+      const inspection = await api.fs.inspectTransfer(clip.mode === 'copy' ? 'copy' : 'move', clip.paths, dst);
+      if (inspection.directory_conflicts > 0) {
+        set({ pasteConflict: { mode: clip.mode, paths: [...clip.paths], dst, inspection } });
+        return null;
+      }
+      return await get().resolvePasteConflict('rename');
+    } catch (e) {
+      handleAuth(e);
+      return errMessage(e);
+    }
+  },
+
+  resolvePasteConflict: async (policy) => {
+    const pending = get().pasteConflict;
+    const currentClipboard = get().clipboard;
+    const clip = pending ?? (currentClipboard ? {
+      mode: currentClipboard.mode,
+      paths: [...currentClipboard.paths],
+      dst: get().currentPath,
+    } : null);
+    if (!clip) return null;
+    set({ pasteConflict: null });
+    const started = clip.mode === 'copy'
+      ? await useFileOpStore.getState().startCopy(clip.paths, clip.dst, false, policy)
+      : await useFileOpStore.getState().startMove(clip.paths, clip.dst, false, policy);
+    if (started && clip.mode === 'cut') {
+      // 剪切仅在任务成功创建后清空，取消或发起失败时保留剪贴板。
       set({ clipboard: null });
     }
-    return null;
+    return started ? null : '操作未能开始';
   },
+
+  cancelPasteConflict: () => set({ pasteConflict: null }),
 }));
 
 // errMessage 提取异常的可读信息。

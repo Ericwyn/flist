@@ -10,6 +10,14 @@ const (
 	FileOpExtract = "extract"
 )
 
+// 冲突处理策略。error 保持严格冲突；rename 保留两份并自动改名；
+// merge_dirs 递归合并同名目录，其他冲突自动改名。
+const (
+	ConflictError     = "error"
+	ConflictRename    = "rename"
+	ConflictMergeDirs = "merge_dirs"
+)
+
 // 文件操作任务状态。
 const (
 	FileOpQueued   = "queued"   // 已入队，等待全局串行槽

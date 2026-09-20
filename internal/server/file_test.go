@@ -94,6 +94,46 @@ func TestFSList_OK(t *testing.T) {
 	}
 }
 
+func TestFSConflictPreflightAndMergeMove(t *testing.T) {
+	h, token, root := newFSTestServer(t)
+	if err := os.MkdirAll(filepath.Join(root, "A", "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "B", "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "A", "docs", "incoming.txt"), []byte("incoming"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "B", "docs", "existing.txt"), []byte("existing"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, env := doJSON(t, h, http.MethodPost, "/api/fs/op/conflicts", token, map[string]any{
+		"op": "move", "src": []string{"/A/docs"}, "dst": "/B",
+	})
+	if rec.Code != http.StatusOK || env["code"].(float64) != 0 {
+		t.Fatalf("preflight failed: status=%d env=%v", rec.Code, env)
+	}
+	inspection := env["data"].(map[string]any)
+	if inspection["directory_conflicts"].(float64) != 1 {
+		t.Fatalf("expected one directory conflict: %v", inspection)
+	}
+
+	rec, env = doJSON(t, h, http.MethodPost, "/api/fs/move", token, map[string]any{
+		"src": []string{"/A/docs"}, "dst": "/B", "conflict_policy": "merge_dirs",
+	})
+	if rec.Code != http.StatusOK || env["code"].(float64) != 0 {
+		t.Fatalf("merge move failed: status=%d env=%v", rec.Code, env)
+	}
+	if _, err := os.Stat(filepath.Join(root, "B", "docs", "incoming.txt")); err != nil {
+		t.Fatalf("merged file missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "A", "docs")); !os.IsNotExist(err) {
+		t.Fatalf("source directory should be removed, err=%v", err)
+	}
+}
+
 func TestFSPreview_Text(t *testing.T) {
 	h, token, root := newFSTestServer(t)
 	os.WriteFile(filepath.Join(root, "note.txt"), []byte("preview me"), 0o644)

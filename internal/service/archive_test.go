@@ -107,6 +107,20 @@ func TestArchive_DedupTopNames(t *testing.T) {
 	}
 }
 
+func TestArchive_DedupDottedDirectories(t *testing.T) {
+	svc, root := setupTestRoot(t)
+	writeFile(t, root, "x/F.I.R/a.txt", "first")
+	writeFile(t, root, "y/F.I.R/b.txt", "second")
+
+	contents, _ := readArchive(t, svc, []string{"/x/F.I.R", "/y/F.I.R"})
+	if contents["F.I.R/a.txt"] != "first" {
+		t.Errorf("first dotted directory missing: %v", contents)
+	}
+	if contents["F.I.R (2)/b.txt"] != "second" {
+		t.Errorf("dotted directory was split as an extension: %v", contents)
+	}
+}
+
 func TestArchive_IncludesHidden(t *testing.T) {
 	svc, root := setupTestRoot(t)
 	writeFile(t, root, "d/.secret", "hidden")

@@ -116,6 +116,33 @@ func TestFileOpCopyProgress(t *testing.T) {
 	}
 }
 
+func TestFileOpMergeDirs(t *testing.T) {
+	svc, root := setupOpService(t)
+	writeFile(t, root, "src/docs/incoming.txt", "incoming")
+	writeFile(t, root, "dst/docs/existing.txt", "existing")
+
+	res, err := svc.StartWithPolicy(context.Background(), model.FileOpMove, "u", []string{"/src/docs"}, "/dst", ConflictMergeDirs)
+	if err != nil {
+		t.Fatalf("StartWithPolicy: %v", err)
+	}
+	ch, _, unsub := svc.Subscribe(res.TaskID, "u")
+	defer unsub()
+	events := drainEvents(t, ch, 5*time.Second)
+	last := events[len(events)-1]
+	if last.Snapshot.Status != model.FileOpDone || len(last.Snapshot.Results) != 1 || !last.Snapshot.Results[0].OK {
+		t.Fatalf("unexpected merge result: %+v", last.Snapshot)
+	}
+	if last.Snapshot.Results[0].Outcome != "merged" {
+		t.Fatalf("outcome=%q want merged", last.Snapshot.Results[0].Outcome)
+	}
+	if _, err := os.Stat(filepath.Join(root, "dst/docs/incoming.txt")); err != nil {
+		t.Fatalf("merged file missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "src/docs")); !os.IsNotExist(err) {
+		t.Fatalf("source directory should be removed, err=%v", err)
+	}
+}
+
 // TestFileOpDelete 验证删除任务项级进度与 finished。
 func TestFileOpDelete(t *testing.T) {
 	svc, root := setupOpService(t)
@@ -161,7 +188,7 @@ func TestFileOpCancel(t *testing.T) {
 }
 
 // TestFileOpCopyProgressSlow 验证当节流关闭时，item_progress 确实被推送
-//（证明项内字节进度回调链路通畅；大文件场景下节流为 200ms 仍会推）。
+// （证明项内字节进度回调链路通畅；大文件场景下节流为 200ms 仍会推）。
 func TestFileOpCopyProgressSlow(t *testing.T) {
 	prev := fileOpProgressInterval
 	fileOpProgressInterval = 0 // 关闭节流，每次 Write 都推

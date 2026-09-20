@@ -58,11 +58,13 @@ type ImageMetadataField struct {
 	Value string `json:"value"`
 }
 
-// OpResult 批量写操作（move / delete）的单条结果。
+// OpResult 批量文件操作的单条结果。
 type OpResult struct {
-	Src   string `json:"src"`             // 操作对象的 API 路径
-	OK    bool   `json:"ok"`              // 是否成功
-	Error string `json:"error,omitempty"` // 失败时的错误码名（如 "file_exists"）
+	Src     string `json:"src"`               // 操作对象的 API 路径
+	OK      bool   `json:"ok"`                // 是否成功
+	Error   string `json:"error,omitempty"`   // 失败时的错误码名（如 "file_exists"）
+	Target  string `json:"target,omitempty"`  // 实际落点（自动改名 / 合并时便于展示）
+	Outcome string `json:"outcome,omitempty"` // moved / copied / renamed / merged / partial
 }
 
 // SearchHit 单条搜索命中。

@@ -38,9 +38,11 @@ func opScope(r *http.Request) string {
 }
 
 type opCopyMoveRequest struct {
-	Src        []string `json:"src"`
-	Dst        string   `json:"dst"`
-	AutoRename bool     `json:"auto_rename"`
+	Src            []string `json:"src"`
+	Dst            string   `json:"dst"`
+	Op             string   `json:"op"`
+	AutoRename     bool     `json:"auto_rename"`
+	ConflictPolicy string   `json:"conflict_policy"`
 }
 
 type opDeleteRequest struct {
@@ -63,6 +65,44 @@ func failFileOpErr(w http.ResponseWriter, err error) {
 	}
 }
 
+func requestConflictPolicy(req opCopyMoveRequest) (service.ConflictPolicy, error) {
+	return service.ParseConflictPolicy(req.ConflictPolicy, req.AutoRename)
+}
+
+// Conflicts performs the shallow, authoritative preflight used before paste.
+func (h *FileOpHandler) Conflicts(w http.ResponseWriter, r *http.Request) {
+	if h.ops == nil {
+		failInternal(w)
+		return
+	}
+	var req opCopyMoveRequest
+	if err := decodeJSON(w, r, &req); err != nil || len(req.Src) == 0 || strings.TrimSpace(req.Dst) == "" {
+		failBadRequest(w, "src and dst required")
+		return
+	}
+	if req.ConflictPolicy != "" {
+		if _, err := requestConflictPolicy(req); err != nil {
+			failBadRequest(w, "invalid conflict_policy")
+			return
+		}
+	}
+	res, err := h.ops.Inspect(r.Context(), req.operation(), req.Src, req.Dst)
+	if err != nil {
+		failFileOpErr(w, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{Code: 0, Message: "ok", Data: res})
+}
+
+// Op is carried by the request body as a small extension used only by preflight.
+// Empty op defaults to move, matching the paste path's historical behavior.
+func (r opCopyMoveRequest) operation() string {
+	if r.Op == "" {
+		return model.FileOpMove
+	}
+	return r.Op
+}
+
 // Copy 发起异步复制任务，立即返回 task_id（HTTP 202）。
 func (h *FileOpHandler) Copy(w http.ResponseWriter, r *http.Request) {
 	var req opCopyMoveRequest
@@ -70,7 +110,12 @@ func (h *FileOpHandler) Copy(w http.ResponseWriter, r *http.Request) {
 		failBadRequest(w, "src and dst required")
 		return
 	}
-	res, err := h.ops.Start(r.Context(), model.FileOpCopy, opScope(r), req.Src, req.Dst, req.AutoRename)
+	policy, err := requestConflictPolicy(req)
+	if err != nil {
+		failBadRequest(w, "invalid conflict_policy")
+		return
+	}
+	res, err := h.ops.StartWithPolicy(r.Context(), model.FileOpCopy, opScope(r), req.Src, req.Dst, policy)
 	if err != nil {
 		failFileOpErr(w, err)
 		return
@@ -85,7 +130,12 @@ func (h *FileOpHandler) Move(w http.ResponseWriter, r *http.Request) {
 		failBadRequest(w, "src and dst required")
 		return
 	}
-	res, err := h.ops.Start(r.Context(), model.FileOpMove, opScope(r), req.Src, req.Dst, req.AutoRename)
+	policy, err := requestConflictPolicy(req)
+	if err != nil {
+		failBadRequest(w, "invalid conflict_policy")
+		return
+	}
+	res, err := h.ops.StartWithPolicy(r.Context(), model.FileOpMove, opScope(r), req.Src, req.Dst, policy)
 	if err != nil {
 		failFileOpErr(w, err)
 		return

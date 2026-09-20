@@ -113,6 +113,7 @@ func NewRouter(d Deps) (http.Handler, error) {
 
 			// 异步文件操作任务（copy/move/delete/extract 后台化 + SSE 进度）。发起 / 取消走写限流；
 			// progress SSE 为只读长连接，仅受全局限流。
+			protected.Post("/fs/op/conflicts", fileOpHandler.Conflicts)
 			protected.Get("/fs/op/progress", fileOpHandler.Progress)
 			protected.Group(func(wr chi.Router) {
 				wr.Use(writeLimit)
